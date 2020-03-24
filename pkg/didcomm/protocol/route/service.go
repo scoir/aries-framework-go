@@ -336,6 +336,27 @@ func (s *Service) handleForward(msg service.DIDCommMsg) error {
 		return fmt.Errorf("get destination : %w", err)
 	}
 
+	aEvent := s.ActionEvent()
+	if aEvent != nil {
+		// trigger action event
+		aEvent <- service.DIDCommAction{
+			ProtocolName: Coordination,
+			Message:      msg,
+			Continue: func(args interface{}) {
+				err := s.outbound.Forward(forward.Msg, dest)
+				if err != nil {
+					logger.Errorf("Router forward failed in continuation for")
+				}
+			},
+			Stop: func(err error) {
+			},
+			Properties: &forwardEvent{
+				theirDID: string(theirDID),
+			},
+		}
+		return nil
+	}
+
 	return s.outbound.Forward(forward.Msg, dest)
 }
 
