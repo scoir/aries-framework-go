@@ -72,7 +72,7 @@ func (i *Inbound) Stop() error {
 
 // Endpoint provides the http(ws) connection details.
 func (i *Inbound) Endpoint() string {
-	return i.externalAddr
+	return fmt.Sprintf("%s://%s", webSocketScheme, i.externalAddr)
 }
 
 func (i *Inbound) processRequest(w http.ResponseWriter, r *http.Request) {

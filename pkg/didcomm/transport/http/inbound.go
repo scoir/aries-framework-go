@@ -155,5 +155,5 @@ func (i *Inbound) Stop() error {
 // Endpoint provides the http connection details.
 func (i *Inbound) Endpoint() string {
 	// return http prefix as framework only supports http
-	return i.externalAddr
+	return fmt.Sprintf("%s://%s", httpScheme, i.externalAddr)
 }
