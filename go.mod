@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-module github.com/hyperledger/aries-framework-go
+module github.com/scoir/aries-framework-go
 
 require (
 	github.com/VictoriaMetrics/fastcache v1.5.7
