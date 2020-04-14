@@ -38,19 +38,6 @@ func NewNymRequest(did, from string) *Request {
 	}
 }
 
-func NewNym(did, verkey, from, role string) *Request {
-	return &Request{
-		Operation: Nym{
-			Operation: Operation{Type: NYM},
-			Dest:      did,
-			Verkey:    verkey,
-			Role:      role,
-		},
-		Identifier:      from,
-		ReqID:           uuid.New().ID(),
-		ProtocolVersion: protocolVersion,
-	}
-}
 
 func (r *VDRI) GetNym(did string) (*Nym, error) {
 	nymRequest := NewNymRequest(did, AgencyDID)
@@ -66,23 +53,3 @@ func (r *VDRI) GetNym(did string) (*Nym, error) {
 	}
 	return nym, nil
 }
-
-func (r *VDRI) CreateNym(did, verkey string) error {
-	fmt.Println("the ver key", verkey)
-	nymRequest := NewNym(r.strip(did), verkey, AgencyDID, "")
-	_, err := r.write(nymRequest, AgencyVerkey)
-	if err != nil {
-		return fmt.Errorf("unable to create nym: %v", err)
-	}
-
-	return nil
-}
-
-//enckey, verkey, err := r.kms.CreateKeySet()
-//if err != nil {
-//	return nil, fmt.Errorf("error creating keyset: %v", err)
-//}
-//did := base58.Encode(base58.Decode(enckey)[0:16])
-//fmt.Println(verkey)
-//fmt.Println(did)
-//

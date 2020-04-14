@@ -48,31 +48,6 @@ func newAttribRequest(attrReq AttribRequest, from string) *Request {
 	}
 }
 
-func NewRawAttrib(did, from string, data map[string]interface{}) *Request {
-	d, _ := json.Marshal(data)
-	return newAttrib(Attrib{Operation: Operation{Type: ATTRIB}, Dest: did, Raw: string(d)}, from)
-}
-
-func NewHashAttrib(did, data, from string) *Request {
-	d, _ := json.Marshal(data)
-	hash := sha256.New().Sum(d)
-	return newAttrib(Attrib{Operation: Operation{Type: ATTRIB}, Dest: did, Hash: string(hash)}, from)
-}
-
-func NewEncAttrib(did, data, from string) *Request {
-	//TODO: figure out how to enc
-	enc := data
-	return newAttrib(Attrib{Operation: Operation{Type: ATTRIB}, Dest: did, Enc: enc}, from)
-}
-
-func newAttrib(attrib Attrib, from string) *Request {
-	return &Request{
-		Operation:       attrib,
-		Identifier:      from,
-		ReqID:           uuid.New().ID(),
-		ProtocolVersion: protocolVersion,
-	}
-}
 
 func (r *VDRI) GetAttrib(did, raw string) (*Attrib, error) {
 	attribRequest := NewRawAttribRequest(did, raw, AgencyDID)
@@ -91,18 +66,4 @@ func (r *VDRI) GetAttrib(did, raw string) (*Attrib, error) {
 	attrib := &Attrib{Data: mdata}
 	return attrib, nil
 
-}
-
-func (r *VDRI) CreateAttrib(did, verkey string, data map[string]interface{}) error {
-	rawAttrib := NewRawAttrib(r.strip(did), r.strip(did), data)
-
-	d, _ := json.MarshalIndent(rawAttrib, " ", " ")
-	fmt.Println(string(d))
-
-	_, err := r.write(rawAttrib, verkey)
-	if err != nil {
-		return fmt.Errorf("unable to create attrib: %v", err)
-	}
-
-	return nil
 }
