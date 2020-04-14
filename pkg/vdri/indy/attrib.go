@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 )
 
 type AttribRequest struct {
@@ -80,13 +79,13 @@ func (r *VDRI) GetAttrib(did, raw string) (*Attrib, error) {
 
 	resp, err := r.read(attribRequest)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to get attribute")
+		return nil, fmt.Errorf("unable to get attribute: %v", err)
 	}
 
 	mdata := map[string]interface{}{}
 	err = json.Unmarshal([]byte(resp.Data), &mdata)
 	if err != nil {
-		return nil, errors.Wrap(err, "invalid attrib data")
+		return nil, fmt.Errorf("invalid attrib data: %v", err)
 	}
 
 	attrib := &Attrib{Data: mdata}
@@ -102,7 +101,7 @@ func (r *VDRI) CreateAttrib(did, verkey string, data map[string]interface{}) err
 
 	_, err := r.write(rawAttrib, verkey)
 	if err != nil {
-		return errors.Wrap(err, "unable to create attrib")
+		return fmt.Errorf("unable to create attrib: %v", err)
 	}
 
 	return nil

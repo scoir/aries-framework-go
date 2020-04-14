@@ -7,10 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 package indy
 
 import (
+	"fmt"
+
 	"github.com/btcsuite/btcutil/base58"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	vdriapi "github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
-	"github.com/pkg/errors"
 )
 
 // Read implements didresolver.DidMethod.Read interface (https://w3c-ccg.github.io/did-resolution/#resolving-input)
@@ -23,11 +24,11 @@ func (r *VDRI) Read(didID string, _ ...vdriapi.ResolveOpts) (*did.Doc, error) {
 	short := r.strip(didID)
 	nym, err := r.GetNym(short)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to get nym resolving DID")
+		return nil, fmt.Errorf("unable to get nym resolving DID: %v", err)
 	}
 	attrib, err := r.GetAttrib(short, "endpoint")
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to get attrib resolving DID")
+		return nil, fmt.Errorf("unable to get attrib resolving DID: %v", err)
 	}
 
 	mm, ok := attrib.Data["endpoint"].(map[string]interface{})

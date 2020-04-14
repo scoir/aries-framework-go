@@ -1,13 +1,12 @@
 package indy
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"net/http"
 
+	"github.com/hyperledger/aries-framework-go/pkg/common/log"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
+	vdriapi "github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -15,6 +14,8 @@ const (
 	DefaultVDRHost = "0.0.0.0"
 	DefaulVDRPort  = 4300
 )
+
+var logger = log.New("aries-framework/vdri/indy")
 
 type provider interface {
 	LegacyKMS() legacykms.KeyManager
@@ -26,9 +27,6 @@ type VDRI struct {
 	didMethod  string
 	prefix     string
 	vdrAddress string
-	genesis    []Record
-	clientIP   string
-	clientPort int
 	kms        legacykms.KMS
 }
 
@@ -45,29 +43,18 @@ func New(didMethod, genesisURL string, kms legacykms.KMS, opts ...Option) (*VDRI
 		opt(vdri)
 	}
 
-	resp, err := http.Get(genesisURL)
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to retrieve genesis file from %s", genesisURL)
-	}
-	defer klose(resp.Body)
-	gread := bufio.NewScanner(resp.Body)
-
-	var genesis []Record
-	for gread.Scan() {
-		rec := Record{}
-		err = json.Unmarshal(gread.Bytes(), &rec)
-		if err != nil {
-			return nil, errors.Wrap(err, "error decoding genesis")
-		}
-		genesis = append(genesis, rec)
-	}
-
-	node1Data := genesis[0].Txn.Data.Data
-	vdri.genesis = genesis
-	vdri.clientIP = node1Data["client_ip"].(string)
-	vdri.clientPort = int(node1Data["client_port"].(float64))
-
 	return vdri, nil
+}
+
+// Store did doc
+func (r *VDRI) Store(doc *did.Doc, by *[]vdriapi.ModifiedBy) error {
+	logger.Warnf(" store not supported in http binding vdri")
+	return nil
+}
+
+// Close frees resources being maintained by vdri.
+func (r *VDRI) Close() error {
+	return nil
 }
 
 // Accept did method
