@@ -65,6 +65,7 @@ type Aries struct {
 	packers                []packer.Packer
 	vdriRegistry           vdriapi.Registry
 	vdri                   []vdriapi.VDRI
+	defaultServiceEndpoint string
 	transportReturnRoute   string
 	id                     string
 }
@@ -146,6 +147,14 @@ func initializeServices(frameworkOpts *Aries) (*Aries, error) {
 	}
 
 	return frameworkOpts, nil
+}
+
+// WithMessengerHandler injects a messenger handler to the Aries framework
+func WithServiceEndpoint(ep string) Option {
+	return func(opts *Aries) error {
+		opts.defaultServiceEndpoint = ep
+		return nil
+	}
 }
 
 // WithMessengerHandler injects a messenger handler to the Aries framework
@@ -555,6 +564,9 @@ func createPackersAndPackager(frameworkOpts *Aries) error {
 }
 
 func serviceEndpoint(frameworkOpts *Aries) string {
+	if frameworkOpts.defaultServiceEndpoint != "" {
+		return frameworkOpts.defaultServiceEndpoint
+	}
 	return fetchEndpoint(frameworkOpts, "ws")
 }
 
