@@ -555,7 +555,7 @@ func (s *Service) newDIDCommActionMsg(md *metaData) service.DIDCommAction {
 			md.err = customError{error: cErr}
 			s.processCallback(md)
 		},
-		Properties: credentialEvent{theirDID: md.TheirDID},
+		Properties: &credentialEvent{theirDID: md.TheirDID},
 	}
 }
 
