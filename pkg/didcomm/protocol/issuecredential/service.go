@@ -272,6 +272,9 @@ func (s *Service) startInternalListener() {
 		if msg.err == nil {
 			continue
 		}
+		fmt.Println("***** ERR ******")
+		fmt.Println(msg.err)
+		fmt.Println("***** ERR ******")
 
 		d, _ := json.MarshalIndent(msg, " ", " ")
 		fmt.Println(string(d))
