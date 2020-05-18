@@ -59,7 +59,7 @@ func (s *Store) SaveCredential(name string, vc *verifiable.Credential) error {
 	}
 
 	if id != "" {
-		return errors.New("credential name already exists")
+		return fmt.Errorf("credential name %s already exists", name)
 	}
 
 	vcBytes, err := vc.MarshalJSON()
