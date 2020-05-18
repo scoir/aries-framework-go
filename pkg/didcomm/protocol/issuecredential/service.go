@@ -273,6 +273,9 @@ func (s *Service) startInternalListener() {
 			continue
 		}
 
+		d, _ := json.MarshalIndent(msg, " ", " ")
+		fmt.Println(string(d))
+
 		msg.state = &abandoning{Code: codeInternalError}
 
 		if err := s.handle(msg); err != nil {
