@@ -36,6 +36,7 @@ const (
 
 	httpTransportProvider      = "http"
 	webSocketTransportProvider = "websocket"
+	sideTreeURL                = "${SIDETREE_URL}"
 )
 
 var logger = log.New("aries-framework/tests")
@@ -50,7 +51,8 @@ func NewSDKSteps() *SDKSteps {
 	return &SDKSteps{}
 }
 
-func (a *SDKSteps) createAgent(agentID, inboundHost, inboundPort, scheme string) error {
+// CreateAgent with the given parameters.
+func (a *SDKSteps) CreateAgent(agentID, inboundHost, inboundPort, scheme string) error {
 	opts := append([]aries.Option{}, aries.WithStoreProvider(a.getStoreProvider(agentID)))
 
 	return a.create(agentID, inboundHost, inboundPort, scheme, opts...)
@@ -71,7 +73,12 @@ func (a *SDKSteps) createAgentWithRegistrarAndHTTPDIDResolver(agentID, inboundHo
 	msgRegistrar := msghandler.NewRegistrar()
 	a.bddContext.MessageRegistrar[agentID] = msgRegistrar
 
-	httpVDRI, err := httpbinding.New(a.bddContext.Args[endpointURL],
+	url := a.bddContext.Args[endpointURL]
+	if endpointURL == sideTreeURL {
+		url += "identifiers"
+	}
+
+	httpVDRI, err := httpbinding.New(url,
 		httpbinding.WithAccept(func(method string) bool { return method == acceptDidMethod }))
 	if err != nil {
 		return fmt.Errorf("failed from httpbinding new ")
@@ -89,7 +96,12 @@ func (a *SDKSteps) CreateAgentWithHTTPDIDResolver(
 	var opts []aries.Option
 
 	for _, agentID := range strings.Split(agents, ",") {
-		httpVDRI, err := httpbinding.New(a.bddContext.Args[endpointURL],
+		url := a.bddContext.Args[endpointURL]
+		if endpointURL == sideTreeURL {
+			url += "identifiers"
+		}
+
+		httpVDRI, err := httpbinding.New(url,
 			httpbinding.WithAccept(func(method string) bool { return method == acceptDidMethod }))
 		if err != nil {
 			return fmt.Errorf("failed from httpbinding new ")
@@ -234,7 +246,7 @@ func (a *SDKSteps) SetContext(ctx *context.BDDContext) {
 // RegisterSteps registers agent steps
 func (a *SDKSteps) RegisterSteps(s *godog.Suite) {
 	s.Step(`^"([^"]*)" agent is running on "([^"]*)" port "([^"]*)" with "([^"]*)" as the transport provider$`,
-		a.createAgent)
+		a.CreateAgent)
 	s.Step(`^"([^"]*)" edge agent is running with "([^"]*)" as the outbound transport provider `+
 		`and "([^"]*)" as the transport return route option`, a.createEdgeAgent)
 	s.Step(`^"([^"]*)" agent is running on "([^"]*)" port "([^"]*)" `+

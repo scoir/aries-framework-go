@@ -35,6 +35,26 @@ func TestDocumentSigner_Sign(t *testing.T) {
 	signedJWSDoc, err := s.Sign(context, []byte(validDoc))
 	require.NoError(t, err)
 	require.NotNil(t, signedJWSDoc)
+
+	var signedJWSMap map[string]interface{}
+	err = json.Unmarshal(signedJWSDoc, &signedJWSMap)
+	require.NoError(t, err)
+
+	proofsIface, ok := signedJWSMap["proof"]
+	require.True(t, ok)
+
+	proofs, ok := proofsIface.([]interface{})
+	require.True(t, ok)
+	require.Len(t, proofs, 1)
+
+	proofMap, ok := proofs[0].(map[string]interface{})
+	require.True(t, ok)
+
+	require.Equal(t, "creator", proofMap["creator"])
+	require.Equal(t, "assertionMethod", proofMap["proofPurpose"])
+	require.Equal(t, "Ed25519Signature2018", proofMap["type"])
+	require.Contains(t, proofMap, "created")
+	require.Contains(t, proofMap, "jws")
 }
 
 func TestDocumentSigner_SignErrors(t *testing.T) {
@@ -127,12 +147,12 @@ func (s *testSigner) Sign(doc []byte) ([]byte, error) {
 
 //nolint:lll
 const validDoc = `{
-  "@context": ["https://w3id.org/did/v1"],
+  "@context": ["https://w3id.org/did/v1", "https://w3id.org/security/v2"],
   "id": "did:example:21tDAKCERh95uGgKbJNHYp",
   "publicKey": [
     {
       "id": "did:example:123456789abcdefghi#keys-1",
-      "type": "Secp256k1VerificationKey2018",
+      "type": "EcdsaSecp256k1VerificationKey2019",
       "controller": "did:example:123456789abcdefghi",
       "publicKeyBase58": "H3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV"
     },

@@ -38,6 +38,7 @@ func TestPublicKeyVerifier_Verify_EC(t *testing.T) {
 
 		JWK: &jose.JWK{
 			JSONWebKey: gojose.JSONWebKey{
+				Key:       &privKey.PublicKey,
 				Algorithm: "ES256",
 			},
 			Crv: "P-256",
@@ -45,34 +46,36 @@ func TestPublicKeyVerifier_Verify_EC(t *testing.T) {
 		},
 	}
 
-	v := &PublicKeyVerifier{}
-	signature := getECSignature(privKey, msg)
-
 	t.Run("happy path", func(t *testing.T) {
 		tests := []struct {
 			curve     elliptic.Curve
 			curveName string
 			algorithm string
+			hash      crypto.Hash
 		}{
 			{
 				curve:     elliptic.P256(),
 				curveName: "P-256",
 				algorithm: "ES256",
+				hash:      crypto.SHA256,
 			},
 			{
 				curve:     elliptic.P384(),
 				curveName: "P-384",
 				algorithm: "ES384",
+				hash:      crypto.SHA384,
 			},
 			{
 				curve:     elliptic.P521(),
 				curveName: "P-521",
 				algorithm: "ES521",
+				hash:      crypto.SHA512,
 			},
 			{
 				curve:     btcec.S256(),
 				curveName: "secp256k1",
 				algorithm: "ES256K",
+				hash:      crypto.SHA256,
 			},
 		}
 
@@ -90,6 +93,7 @@ func TestPublicKeyVerifier_Verify_EC(t *testing.T) {
 					Value: pubKeyBytes,
 					JWK: &jose.JWK{
 						JSONWebKey: gojose.JSONWebKey{
+							Key:       &privKey.PublicKey,
 							Algorithm: tc.algorithm,
 						},
 						Crv: tc.curveName,
@@ -97,87 +101,14 @@ func TestPublicKeyVerifier_Verify_EC(t *testing.T) {
 					},
 				}
 
-				v = &PublicKeyVerifier{}
-				signature = getECSignature(privKey, msg)
+				v := NewPublicKeyVerifier()
+				signature, err := getECSignature(privKey, msg, tc.hash)
+				require.NoError(t, err)
 
 				err = v.Verify(pubKey, msg, signature)
 				require.NoError(t, err)
 			})
 		}
-	})
-
-	t.Run("undefined JWK", func(t *testing.T) {
-		verifyError := v.Verify(&sigverifier.PublicKey{
-			Type:  "JwsVerificationKey2020",
-			Value: pubKeyBytes,
-		}, msg, signature)
-		require.Error(t, verifyError)
-		require.Equal(t, verifyError, ErrJWKNotPresent)
-	})
-
-	t.Run("JWK is invalid type", func(t *testing.T) {
-		verifyError := v.Verify(&sigverifier.PublicKey{
-			Type:  "Ed25519Signature2018",
-			Value: pubKeyBytes,
-			JWK:   &jose.JWK{},
-		}, msg, signature)
-		require.Error(t, verifyError)
-		require.Equal(t, verifyError, ErrTypeNotJwsVerificationKey2020)
-	})
-
-	t.Run("JWK with unsupported key type", func(t *testing.T) {
-		verifyError := v.Verify(&sigverifier.PublicKey{
-			Type:  "JwsVerificationKey2020",
-			Value: pubKeyBytes,
-			JWK: &jose.JWK{
-				Kty: "unknown",
-			},
-		}, msg, signature)
-		require.Error(t, verifyError)
-		require.EqualError(t, verifyError, "unsupported key type: unknown")
-	})
-
-	t.Run("unsupported curve", func(t *testing.T) {
-		verifyError := v.Verify(&sigverifier.PublicKey{
-			Type:  "JwsVerificationKey2020",
-			Value: pubKeyBytes,
-			JWK: &jose.JWK{
-				JSONWebKey: gojose.JSONWebKey{
-					Algorithm: "ES256",
-				},
-				Crv: "unsupported",
-				Kty: "EC",
-			},
-		}, msg, signature)
-		require.Error(t, verifyError)
-		require.EqualError(t, verifyError, "ecdsa: unsupported elliptic curve 'unsupported'")
-	})
-
-	t.Run("invalid public key", func(t *testing.T) {
-		verifyError := v.Verify(&sigverifier.PublicKey{
-			Type:  "JwsVerificationKey2020",
-			Value: []byte("invalid public key"),
-			JWK: &jose.JWK{
-				JSONWebKey: gojose.JSONWebKey{
-					Algorithm: "ES256",
-				},
-				Crv: "P-256",
-				Kty: "EC",
-			},
-		}, msg, signature)
-		require.Error(t, verifyError)
-		require.EqualError(t, verifyError, "ecdsa: invalid public key")
-	})
-
-	t.Run("invalid signature", func(t *testing.T) {
-		verifyError := v.Verify(pubKey, msg, []byte("signature of invalid size"))
-		require.Error(t, verifyError)
-		require.EqualError(t, verifyError, "ecdsa: invalid signature size")
-
-		emptySig := make([]byte, 64)
-		verifyError = v.Verify(pubKey, msg, emptySig)
-		require.Error(t, verifyError)
-		require.EqualError(t, verifyError, "ecdsa: invalid signature")
 	})
 }
 
@@ -191,33 +122,15 @@ func TestPublicKeyVerifier_Verify_Ed25519(t *testing.T) {
 	pubKey := &sigverifier.PublicKey{
 		Type: "JwsVerificationKey2020",
 		JWK: &jose.JWK{
-			Kty: "OKP",
-			Crv: "Ed25519",
+			JSONWebKey: gojose.JSONWebKey{Key: publicKey},
+			Kty:        "OKP",
+			Crv:        "Ed25519",
 		},
-		Value: publicKey,
 	}
-	v := &PublicKeyVerifier{}
+	v := NewPublicKeyVerifier()
 
 	err = v.Verify(pubKey, msg, msgSig)
 	require.NoError(t, err)
-
-	// invalid signature
-	err = v.Verify(pubKey, msg, []byte("invalid signature"))
-	require.Error(t, err)
-	require.EqualError(t, err, "ed25519: invalid signature")
-
-	// invalid public key
-	pubKey.Value = []byte("invalid-key")
-	err = v.Verify(pubKey, msg, msgSig)
-	require.Error(t, err)
-	require.EqualError(t, err, "ed25519: invalid key")
-
-	// unsupported OKP algorithm - must be EdDSA if defined
-	pubKey.Value = publicKey
-	pubKey.JWK.Algorithm = "unknown"
-	err = v.Verify(pubKey, msg, msgSig)
-	require.Error(t, err)
-	require.EqualError(t, err, "unsupported OKP algorithm: unknown")
 }
 
 func TestPublicKeyVerifier_Verify_RSA(t *testing.T) {
@@ -239,32 +152,14 @@ func TestPublicKeyVerifier_Verify_RSA(t *testing.T) {
 		Value: pubKeyBytes,
 	}
 
-	v := &PublicKeyVerifier{}
+	v := NewPublicKeyVerifier()
 
 	err = v.Verify(pubKey, msg, msgSig)
 	require.NoError(t, err)
-
-	// invalid signature
-	err = v.Verify(pubKey, msg, []byte("invalid signature"))
-	require.Error(t, err)
-	require.EqualError(t, err, "rsa: invalid signature")
-
-	// unsupported RSA algorithm
-	pubKey.JWK.Algorithm = "RS512"
-	err = v.Verify(pubKey, msg, msgSig)
-	require.Error(t, err)
-	require.EqualError(t, err, "unsupported RSA algorithm: RS512")
-
-	// invalid public key
-	pubKey.JWK.Algorithm = "PS256"
-	pubKey.Value = []byte("invalid-key")
-	err = v.Verify(pubKey, msg, msgSig)
-	require.Error(t, err)
-	require.EqualError(t, err, "rsa: invalid public key")
 }
 
-func getECSignature(privKey *ecdsa.PrivateKey, payload []byte) []byte {
-	hasher := crypto.SHA256.New()
+func getECSignature(privKey *ecdsa.PrivateKey, payload []byte, hash crypto.Hash) ([]byte, error) {
+	hasher := hash.New()
 
 	_, err := hasher.Write(payload)
 	if err != nil {
@@ -275,7 +170,7 @@ func getECSignature(privKey *ecdsa.PrivateKey, payload []byte) []byte {
 
 	r, s, err := ecdsa.Sign(rand.Reader, privKey, hashed)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	curveBits := privKey.Curve.Params().BitSize
@@ -285,14 +180,14 @@ func getECSignature(privKey *ecdsa.PrivateKey, payload []byte) []byte {
 		keyBytes++
 	}
 
-	return append(copyPadded(r.Bytes(), keyBytes), copyPadded(s.Bytes(), keyBytes)...)
-}
+	copyPadded := func(source []byte, size int) []byte {
+		dest := make([]byte, size)
+		copy(dest[size-len(source):], source)
 
-func copyPadded(source []byte, size int) []byte {
-	dest := make([]byte, size)
-	copy(dest[size-len(source):], source)
+		return dest
+	}
 
-	return dest
+	return append(copyPadded(r.Bytes(), keyBytes), copyPadded(s.Bytes(), keyBytes)...), nil
 }
 
 func getRSASignature(privKey *rsa.PrivateKey, payload []byte) []byte {

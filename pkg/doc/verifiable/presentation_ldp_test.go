@@ -6,25 +6,25 @@ SPDX-License-Identifier: Apache-2.0
 package verifiable
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/util/signature"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 )
 
-func TestNewPresentationFromLinkedDataProof(t *testing.T) {
+func TestParsePresentationFromLinkedDataProof(t *testing.T) {
 	r := require.New(t)
 
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	signer, err := signature.NewEd25519Signer()
 	r.NoError(err)
 
-	ss := ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey)))
+	ss := ed25519signature2018.New(suite.WithSigner(signer))
 
 	ldpContext := &LinkedDataProofContext{
 		SignatureType:           "Ed25519Signature2018",
@@ -32,18 +32,18 @@ func TestNewPresentationFromLinkedDataProof(t *testing.T) {
 		Suite:                   ss,
 	}
 
-	vc, err := NewPresentation([]byte(validPresentation))
+	vc, err := newTestPresentation([]byte(validPresentation))
 	r.NoError(err)
 
-	err = vc.AddLinkedDataProof(ldpContext)
+	err = vc.AddLinkedDataProof(ldpContext, jsonld.WithDocumentLoader(createTestJSONLDDocumentLoader()))
 	r.NoError(err)
 
 	vcBytes, err := json.Marshal(vc)
 	r.NoError(err)
 
-	vcWithLdp, err := NewPresentation(vcBytes,
+	vcWithLdp, err := newTestPresentation(vcBytes,
 		WithPresEmbeddedSignatureSuites(ss),
-		WithPresPublicKeyFetcher(SingleKey(pubKey, kms.ED25519)))
+		WithPresPublicKeyFetcher(SingleKey(signer.PublicKey, kms.ED25519)))
 	r.NoError(err)
 
 	r.NoError(err)
@@ -53,20 +53,20 @@ func TestNewPresentationFromLinkedDataProof(t *testing.T) {
 func TestPresentation_AddLinkedDataProof(t *testing.T) {
 	r := require.New(t)
 
-	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	signer, err := signature.NewEd25519Signer()
 	r.NoError(err)
 
 	ldpContext := &LinkedDataProofContext{
 		SignatureType:           "Ed25519Signature2018",
 		SignatureRepresentation: SignatureProofValue,
-		Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey))),
+		Suite:                   ed25519signature2018.New(suite.WithSigner(signer)),
 	}
 
 	t.Run("Add a valid Linked Data proof to VC", func(t *testing.T) {
-		vp, err := NewPresentation([]byte(validPresentation))
+		vp, err := newTestPresentation([]byte(validPresentation))
 		r.NoError(err)
 
-		err = vp.AddLinkedDataProof(ldpContext)
+		err = vp.AddLinkedDataProof(ldpContext, jsonld.WithDocumentLoader(createTestJSONLDDocumentLoader()))
 		r.NoError(err)
 
 		vpJSON, err := vp.MarshalJSON()
@@ -85,27 +85,5 @@ func TestPresentation_AddLinkedDataProof(t *testing.T) {
 		r.Contains(newVPProof, "created")
 		r.Contains(newVPProof, "proofValue")
 		r.Equal("Ed25519Signature2018", newVPProof["type"])
-	})
-
-	t.Run("Add invalid Linked Data proof to VC", func(t *testing.T) {
-		vp, err := NewPresentation([]byte(validPresentation))
-		require.NoError(t, err)
-
-		vp.RefreshService = &TypedID{
-			CustomFields: map[string]interface{}{
-				"invalidField": make(chan int),
-			},
-		}
-
-		err = vp.AddLinkedDataProof(ldpContext)
-		r.Error(err)
-
-		vp.RefreshService = nil
-		ldpContextWithMissingSignatureType := &LinkedDataProofContext{
-			Suite: ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey))),
-		}
-
-		err = vp.AddLinkedDataProof(ldpContextWithMissingSignatureType)
-		r.Error(err)
 	})
 }

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/piprate/json-gold/ld"
 	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
@@ -48,6 +49,12 @@ func (ja JWSAlgorithm) name() (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported algorithm: %v", ja)
 	}
+}
+
+type jsonldCredentialOpts struct {
+	jsonldDocumentLoader ld.DocumentLoader
+	externalContext      []string
+	jsonldOnlyValidRDF   bool
 }
 
 // PublicKeyFetcher fetches public key for JWT signing verification based on Issuer ID (possibly DID)
@@ -83,26 +90,16 @@ func (r *DIDKeyResolver) resolvePublicKey(issuerDID, keyID string) (*verifier.Pu
 		return nil, fmt.Errorf("resolve DID %s: %w", issuerDID, err)
 	}
 
-	for _, key := range doc.PublicKey {
-		// TODO remove string contains after sidetree create public key with this format DID#KEYID
-		// sidetree now return #KEYID
-		if strings.Contains(key.ID, keyID) {
-			return &verifier.PublicKey{
-				Type:  key.Type,
-				Value: key.Value,
-			}, nil
-		}
-	}
-
-	// if key not found in PublicKey try to find it in authentication
-	for _, auth := range doc.Authentication {
-		// TODO remove string contains after sidetree create public key with this format DID#KEYID
-		// sidetree now return #KEYID
-		if strings.Contains(auth.PublicKey.ID, keyID) {
-			return &verifier.PublicKey{
-				Type:  auth.PublicKey.Type,
-				Value: auth.PublicKey.Value,
-			}, nil
+	methods := doc.VerificationMethods()
+	for _, verificationMethods := range methods {
+		for _, vm := range verificationMethods {
+			if strings.Contains(vm.PublicKey.ID, keyID) {
+				return &verifier.PublicKey{
+					Type:  vm.PublicKey.Type,
+					Value: vm.PublicKey.Value,
+					JWK:   vm.PublicKey.JSONWebKey(),
+				}, nil
+			}
 		}
 	}
 
@@ -265,7 +262,7 @@ func proofsToRaw(proofs []Proof) ([]byte, error) {
 	}
 }
 
-func decodeProof(proofBytes json.RawMessage) ([]Proof, error) {
+func parseProof(proofBytes json.RawMessage) ([]Proof, error) {
 	if len(proofBytes) == 0 {
 		return nil, nil
 	}

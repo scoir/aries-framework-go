@@ -16,14 +16,13 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/common/log"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
-	storeverifiable "github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 )
 
 const (
 	// Name defines the protocol name
 	Name = "issue-credential"
 	// Spec defines the protocol spec
-	Spec = "https://didcomm.org/issue-credential/1.0/"
+	Spec = "https://didcomm.org/issue-credential/2.0/"
 	// ProposeCredentialMsgType defines the protocol propose-credential message type.
 	ProposeCredentialMsgType = Spec + "propose-credential"
 	// OfferCredentialMsgType defines the protocol offer-credential message type.
@@ -45,14 +44,20 @@ const (
 	transitionalPayloadKey = "transitionalPayload_%s"
 )
 
-var logger = log.New("aries-framework/issuecredential/service")
+// nolint:gochecknoglobals
+var (
+	logger         = log.New("aries-framework/issuecredential/service")
+	initialHandler = HandlerFunc(func(_ MetaData) error {
+		return nil
+	})
+)
 
 // customError is a wrapper to determine custom error against internal error
 type customError struct{ error }
 
 // transitionalPayload keeps payload needed for Continue function to proceed with the action
 type transitionalPayload struct {
-	// protocol state machine identifier
+	// Protocol instance ID
 	PIID      string
 	StateName string
 	Msg       service.DIDCommMsgMap
@@ -66,7 +71,6 @@ type metaData struct {
 	state           state
 	msgClone        service.DIDCommMsg
 	inbound         bool
-	verifiable      *storeverifiable.Store
 	credentialNames []string
 	// keeps offer credential payload,
 	// allows filling the message by providing an option function
@@ -79,11 +83,35 @@ type metaData struct {
 	err error
 }
 
+func (md *metaData) Message() service.DIDCommMsg {
+	return md.msgClone
+}
+
+func (md *metaData) OfferCredential() *OfferCredential {
+	return md.offerCredential
+}
+
+func (md *metaData) ProposeCredential() *ProposeCredential {
+	return md.proposeCredential
+}
+
+func (md *metaData) IssueCredential() *IssueCredential {
+	return md.issueCredential
+}
+
+func (md *metaData) CredentialNames() []string {
+	return md.credentialNames
+}
+
+func (md *metaData) StateName() string {
+	return md.state.Name()
+}
+
 // Action contains helpful information about action
 type Action struct {
-	// protocol state machine identifier
-	PIID string
-	Msg  service.DIDCommMsgMap
+	// Protocol instance ID
+	PIID string                `json:"piid"`
+	Msg  service.DIDCommMsgMap `json:"msg"`
 }
 
 // Opt describes option signature for the Continue function
@@ -134,7 +162,7 @@ type Service struct {
 	store      storage.Store
 	callbacks  chan *metaData
 	messenger  service.Messenger
-	verifiable *storeverifiable.Store
+	middleware Handler
 }
 
 // New returns the issuecredential service
@@ -144,22 +172,27 @@ func New(p Provider) (*Service, error) {
 		return nil, err
 	}
 
-	vStore, err := storeverifiable.New(p)
-	if err != nil {
-		return nil, err
-	}
-
 	svc := &Service{
 		messenger:  p.Messenger(),
 		store:      store,
-		verifiable: vStore,
 		callbacks:  make(chan *metaData),
+		middleware: initialHandler,
 	}
 
 	// start the listener
 	go svc.startInternalListener()
 
 	return svc, nil
+}
+
+// Use allows providing middlewares
+func (s *Service) Use(items ...Middleware) {
+	var handler Handler = initialHandler
+	for i := len(items) - 1; i >= 0; i-- {
+		handler = items[i](handler)
+	}
+
+	s.middleware = handler
 }
 
 // HandleInbound handles inbound message (issuecredential protocol)
@@ -254,9 +287,8 @@ func (s *Service) doHandle(msg service.DIDCommMsg, outbound bool) (*metaData, er
 			Msg:       msg.(service.DIDCommMsgMap),
 			PIID:      piID,
 		},
-		state:      next,
-		verifiable: s.verifiable,
-		msgClone:   msg.Clone(),
+		state:    next,
+		msgClone: msg.Clone(),
 	}, nil
 }
 
@@ -461,7 +493,6 @@ func (s *Service) ActionContinue(piID string, opt Opt) error {
 		transitionalPayload: *tPayload,
 		state:               stateFromName(tPayload.StateName),
 		msgClone:            tPayload.Msg.Clone(),
-		verifiable:          s.verifiable,
 		inbound:             true,
 	}
 
@@ -489,7 +520,6 @@ func (s *Service) ActionStop(piID string, cErr error) error {
 		transitionalPayload: *tPayload,
 		state:               stateFromName(tPayload.StateName),
 		msgClone:            tPayload.Msg.Clone(),
-		verifiable:          s.verifiable,
 		inbound:             true,
 	}
 
@@ -507,7 +537,7 @@ func (s *Service) ActionStop(piID string, cErr error) error {
 func (s *Service) Actions() ([]Action, error) {
 	records := s.store.Iterator(
 		fmt.Sprintf(transitionalPayloadKey, ""),
-		fmt.Sprintf(transitionalPayloadKey, "~"),
+		fmt.Sprintf(transitionalPayloadKey, storage.EndKeySuffix),
 	)
 	defer records.Release()
 
@@ -583,6 +613,10 @@ func (s *Service) execute(next state, md *metaData) (state, stateAction, error) 
 	exec := next.ExecuteOutbound
 	if md.inbound {
 		exec = next.ExecuteInbound
+	}
+
+	if err := s.middleware.Handle(md); err != nil {
+		return nil, nil, fmt.Errorf("middleware: %w", err)
 	}
 
 	return exec(md)

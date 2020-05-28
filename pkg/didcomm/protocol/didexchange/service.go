@@ -17,7 +17,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/dispatcher"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/mediator"
 	vdriapi "github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/logutil"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
@@ -30,17 +30,17 @@ var logger = log.New("aries-framework/did-exchange/service")
 const (
 	// DIDExchange did exchange protocol
 	DIDExchange = "didexchange"
-	// DIDExchangeSpec defines the did-exchange spec
-	DIDExchangeSpec = "https://didcomm.org/didexchange/1.0/"
+	// PIURI is the did-exchange protocol identifier URI
+	PIURI = "https://didcomm.org/didexchange/1.0"
 	// InvitationMsgType defines the did-exchange invite message type.
-	InvitationMsgType = DIDExchangeSpec + "invitation"
+	InvitationMsgType = PIURI + "/invitation"
 	// RequestMsgType defines the did-exchange request message type.
-	RequestMsgType = DIDExchangeSpec + "request"
+	RequestMsgType = PIURI + "/request"
 	// ResponseMsgType defines the did-exchange response message type.
-	ResponseMsgType = DIDExchangeSpec + "response"
+	ResponseMsgType = PIURI + "/response"
 	// AckMsgType defines the did-exchange ack message type.
-	AckMsgType = DIDExchangeSpec + "ack"
-
+	AckMsgType = PIURI + "/ack"
+	// oobMsgType is the internal message type for the oob invitation that the didexchange service receives.
 	oobMsgType = "oob-invitation"
 )
 
@@ -88,7 +88,7 @@ type context struct {
 	signer             legacykms.Signer
 	connectionStore    *connectionStore
 	vdriRegistry       vdriapi.Registry
-	routeSvc           route.ProtocolService
+	routeSvc           mediator.ProtocolService
 }
 
 // opts are used to provide client properties to DID Exchange service
@@ -107,12 +107,12 @@ func New(prov provider) (*Service, error) {
 		return nil, fmt.Errorf("failed to initialize connection store : %w", err)
 	}
 
-	s, err := prov.Service(route.Coordination)
+	s, err := prov.Service(mediator.Coordination)
 	if err != nil {
 		return nil, err
 	}
 
-	routeSvc, ok := s.(route.ProtocolService)
+	routeSvc, ok := s.(mediator.ProtocolService)
 	if !ok {
 		return nil, errors.New("cast service to Route Service failed")
 	}
@@ -139,11 +139,11 @@ func New(prov provider) (*Service, error) {
 }
 
 // HandleInbound handles inbound didexchange messages.
-func (s *Service) HandleInbound(msg service.DIDCommMsg, myDID, theirDID string) (string, error) {
+func (s *Service) HandleInbound(msg service.DIDCommMsg, _, _ string) (string, error) {
 	logger.Debugf("receive inbound message : %s", msg)
 
 	// fetch the thread id
-	thID, err := threadID(msg)
+	thID, err := msg.ThreadID()
 	if err != nil {
 		return "", err
 	}
@@ -303,7 +303,7 @@ func (s *Service) handle(msg *message, aEvent chan<- service.DIDCommAction) erro
 		haltExecution := false
 
 		// trigger action event based on message type for inbound messages
-		if canTriggerActionEvents(connectionRecord.State, connectionRecord.Namespace) {
+		if msg.Msg.Type() != oobMsgType && canTriggerActionEvents(connectionRecord.State, connectionRecord.Namespace) {
 			msg.NextStateName = next.Name()
 			if err = s.sendActionEvent(msg, aEvent); err != nil {
 				return fmt.Errorf("handle inbound: %w", err)
@@ -414,12 +414,12 @@ func (s *Service) startInternalListener() {
 
 // AcceptInvitation accepts/approves connection invitation.
 func (s *Service) AcceptInvitation(connectionID, publicDID, label string) error {
-	return s.accept(connectionID, publicDID, label, stateNameInvited, "accept exchange invitation")
+	return s.accept(connectionID, publicDID, label, StateIDInvited, "accept exchange invitation")
 }
 
 // AcceptExchangeRequest accepts/approves connection request.
 func (s *Service) AcceptExchangeRequest(connectionID, publicDID, label string) error {
-	return s.accept(connectionID, publicDID, label, stateNameRequested, "accept exchange request")
+	return s.accept(connectionID, publicDID, label, StateIDRequested, "accept exchange request")
 }
 
 // RespondTo this inbound invitation and return with the new connection record's ID.
@@ -512,7 +512,7 @@ func (s *Service) abandon(thID string, msg service.DIDCommMsg, processErr error)
 		ProtocolName: DIDExchange,
 		Type:         service.PostState,
 		Msg:          msg,
-		StateID:      stateNameAbandoned,
+		StateID:      StateIDAbandoned,
 		Properties:   createErrorEventProperties(connRec.ConnectionID, "", processErr),
 	})
 
@@ -530,14 +530,6 @@ func isNoOp(s state) bool {
 	return ok
 }
 
-func threadID(didCommMsg service.DIDCommMsg) (string, error) {
-	if didCommMsg.Type() == InvitationMsgType || didCommMsg.Type() == oobMsgType {
-		return generateRandomID(), nil
-	}
-
-	return didCommMsg.ThreadID()
-}
-
 func (s *Service) currentState(nsThID string) (state, error) {
 	connRec, err := s.connectionStore.GetConnectionRecordByNSThreadID(nsThID)
 	if err != nil {
@@ -552,9 +544,9 @@ func (s *Service) currentState(nsThID string) (state, error) {
 }
 
 func (s *Service) update(msgType string, connectionRecord *connection.Record) error {
-	if (msgType == RequestMsgType && connectionRecord.State == stateNameRequested) ||
-		(msgType == InvitationMsgType && connectionRecord.State == stateNameInvited) ||
-		(msgType == oobMsgType && connectionRecord.State == stateNameInvited) {
+	if (msgType == RequestMsgType && connectionRecord.State == StateIDRequested) ||
+		(msgType == InvitationMsgType && connectionRecord.State == StateIDInvited) ||
+		(msgType == oobMsgType && connectionRecord.State == StateIDInvited) {
 		return s.connectionStore.saveConnectionRecordWithMapping(connectionRecord)
 	}
 
@@ -604,7 +596,7 @@ func (s *Service) oobInvitationMsgRecord(msg service.DIDCommMsg) (*connection.Re
 		InvitationID:    oobInvitation.ID,
 		ServiceEndPoint: svc.ServiceEndpoint,
 		RecipientKeys:   svc.RecipientKeys,
-		TheirLabel:      oobInvitation.Label,
+		TheirLabel:      oobInvitation.TheirLabel,
 		Namespace:       findNamespace(msg.Type()),
 	}
 
@@ -715,7 +707,7 @@ func generateRandomID() string {
 // 1. Role is invitee and state is invited
 // 2. Role is inviter and state is requested
 func canTriggerActionEvents(stateID, ns string) bool {
-	return (stateID == stateNameInvited && ns == myNSPrefix) || (stateID == stateNameRequested && ns == theirNSPrefix)
+	return (stateID == StateIDInvited && ns == myNSPrefix) || (stateID == StateIDRequested && ns == theirNSPrefix)
 }
 
 type options struct {

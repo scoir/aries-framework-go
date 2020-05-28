@@ -19,6 +19,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
 	"github.com/hyperledger/aries-framework-go/pkg/secretlock"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
+	"github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 )
 
 // ErrSvcNotFound is returned when service not found
@@ -41,6 +42,8 @@ type Provider interface {
 	Signer() legacykms.Signer
 	TransientStorageProvider() storage.Provider
 	InboundMessageHandler() didcommtransport.InboundMessageHandler
+	OutboundMessageHandler() service.OutboundHandler
+	VerifiableStore() verifiable.Store
 }
 
 // ProtocolSvcCreator method to create new protocol service

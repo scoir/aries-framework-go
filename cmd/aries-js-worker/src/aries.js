@@ -12,6 +12,9 @@ const inBrowser = typeof window !== 'undefined' && typeof window.document !== 'u
 // wait for 'notifierWait' milliseconds before retrying to check for incoming notifications
 const notifierWait = 10000
 
+// time out for command operations
+const commandTimeout = 20000
+
 // base path to load assets from at runtime
 const __publicPath = _ => {
     if (inNode) {
@@ -31,7 +34,7 @@ const {loadWorker} = require("worker_loader")
 // registers messages in pending and posts them to the worker
 async function invoke(w, pending, pkg, fn, arg, msgTimeout) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(_ => reject(new Error(msgTimeout)), 5000)
+        const timer = setTimeout(_ => reject(new Error(msgTimeout)), commandTimeout)
         let payload = arg
         if (typeof arg === "string") {
             payload = JSON.parse(arg)
@@ -191,6 +194,227 @@ const Aries = function (opts) {
             return () => {
                 quit = true
             }
+        },
+
+        /**
+         * Issue Credential methods - Refer to [OpenAPI spec](docs/rest/openapi_spec.md#generate-openapi-spec) for
+         * input params and output return json values.
+         */
+        issuecredential: {
+            pkgname: "issuecredential",
+            /**
+             * Returns pending actions that have not yet to be executed or cancelled.
+             *
+             * @returns {Promise<Object>}
+             */
+            actions: async function () {
+                return invoke(aw, pending, this.pkgname, "Actions", null, "timeout while getting actions")
+            },
+            /**
+             * Sends an offer.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            sendOffer: async function (req) {
+                return invoke(aw, pending, this.pkgname, "SendOffer", req, "timeout while sending an offer")
+            },
+            /**
+             * Sends a proposal.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            sendProposal: function (req) {
+                return invoke(aw, pending, this.pkgname, "SendProposal", req, "timeout while sending a proposal")
+            },
+            /**
+             * Sends a request.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            sendRequest: function (req) {
+                return invoke(aw, pending, this.pkgname, "SendRequest", req, "timeout while sending a request")
+            },
+            /**
+             * Accepts a proposal.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptProposal: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptProposal", req, "timeout while accepting a proposal")
+            },
+            /**
+             * Declines a proposal.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineProposal: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineProposal", req, "timeout while declining a proposal")
+            },
+            /**
+             * Accepts an offer.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptOffer: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptOffer", req, "timeout while accepting an offer")
+            },
+            /**
+             * Declines an offer.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineOffer: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineOffer", req, "timeout while declining an offer")
+            },
+            /**
+             * Is used when the Holder wants to negotiate about an offer he received.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            negotiateProposal: function (req) {
+                return invoke(aw, pending, this.pkgname, "NegotiateProposal", req, "timeout while negotiating proposal")
+            },
+            /**
+             * Accepts a request.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptRequest: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptRequest", req, "timeout while accepting a request")
+            },
+            /**
+             * Declines a request.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineRequest: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineRequest", req, "timeout while declining a request")
+            },
+            /**
+             * Accepts a credential.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptCredential: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptCredential", req, "timeout while accepting a credential")
+            },
+            /**
+             * Declines a credential.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineCredential: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineCredential", req, "timeout while declining a credential")
+            },
+        },
+
+        /**
+         * Present Proof methods - Refer to [OpenAPI spec](docs/rest/openapi_spec.md#generate-openapi-spec) for
+         * input params and output return json values.
+         */
+        presentproof: {
+            pkgname: "presentproof",
+            /**
+             * Returns pending actions that have not yet to be executed or cancelled.
+             *
+             * @returns {Promise<Object>}
+             */
+            actions: async function () {
+                return invoke(aw, pending, this.pkgname, "Actions", null, "timeout while getting actions")
+            },
+            /**
+             * Sends a request presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            sendRequestPresentation: async function (req) {
+                return invoke(aw, pending, this.pkgname, "SendRequestPresentation", req, "timeout while sending a request presentation")
+            },
+            /**
+             * Sends a propose presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            sendProposePresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "SendProposePresentation", req, "timeout while sending a propose presentation")
+            },
+            /**
+             * Accepts a request presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptRequestPresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptRequestPresentation", req, "timeout while accepting a request presentation")
+            },
+            /**
+             * Accepts a propose presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptProposePresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptProposePresentation", req, "timeout while accepting a propose presentation")
+            },
+            /**
+             * Accepts a presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            acceptPresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "AcceptPresentation", req, "timeout while accepting a presentation")
+            },
+            /**
+             * Is used by the Prover to counter a presentation request they received with a proposal.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            negotiateRequestPresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "NegotiateRequestPresentation", req, "timeout while negotiating a request presentation")
+            },
+            /**
+             * Declines a request presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineRequestPresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineRequestPresentation", req, "timeout while declining a request presentation")
+            },
+            /**
+             * Declines a propose presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declineProposePresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclineProposePresentation", req, "timeout while declining a propose presentation")
+            },
+            /**
+             * Declines a presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            declinePresentation: function (req) {
+                return invoke(aw, pending, this.pkgname, "DeclinePresentation", req, "timeout while declining a presentation")
+            },
         },
 
         /**
@@ -362,16 +586,6 @@ const Aries = function (opts) {
             pkgname: "vdri",
 
             /**
-             * Creates a new Public DID.
-             *
-             * @param req - json document
-             * @returns {Promise<Object>}
-             */
-            createPublicDID: async function (req) {
-                return invoke(aw, pending, this.pkgname, "CreatePublicDID", req, "timeout while creating public DID")
-            },
-
-            /**
              * Saves a did document.
              *
              * @param req - json document
@@ -390,6 +604,17 @@ const Aries = function (opts) {
             getDID: async function (req) {
                 return invoke(aw, pending, this.pkgname, "GetDID", req, "timeout while retrieving did document")
             },
+
+            /**
+             * Resolve a did document.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            resolveDID: async function (req) {
+                return invoke(aw, pending, this.pkgname, "ResolveDID", req, "timeout while resolving did document")
+            },
+
             /**
              * Retrieves did records containing name and id.
              *
@@ -404,8 +629,8 @@ const Aries = function (opts) {
          * Router methods - Refer to [OpenAPI spec](docs/rest/openapi_spec.md#generate-openapi-spec) for
          * input params and output return json values.
          */
-        router: {
-            pkgname: "router",
+        mediator: {
+            pkgname: "mediator",
 
             /**
              * Registers an agent with the router.
@@ -512,6 +737,35 @@ const Aries = function (opts) {
             generatePresentationByID: async function (req) {
                 return invoke(aw, pending,  this.pkgname, "GeneratePresentationByID", req, "timeout while generating verifiable presentation by id")
             },
+
+            /**
+             * Saves a presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            savePresentation: async function (req) {
+                return invoke(aw, pending, this.pkgname, "SavePresentation", req, "timeout while saving presentation")
+            },
+
+            /**
+             * Retrieves a presentation.
+             *
+             * @param req - json document
+             * @returns {Promise<Object>}
+             */
+            getPresentation: async function (req) {
+                return invoke(aw, pending, this.pkgname, "GetPresentation", req, "timeout while retrieving presentation")
+            },
+
+            /**
+             * Retrieves presentation records containing name and fields of interest.
+             *
+             * @returns {Promise<Object>}
+             */
+            getPresentations: async function () {
+                return invoke(aw, pending, this.pkgname, "GetPresentations", {}, "timeout while retrieving presentations")
+            },
         },
 
         /**
@@ -520,6 +774,32 @@ const Aries = function (opts) {
          */
         kms: {
             pkgname: "kms",
+
+            /**
+             * Create key set.
+             *
+             * @returns {Promise<Object>}
+             */
+            createKeySet: async function (req) {
+                return invoke(aw, pending, this.pkgname, "CreateKeySet", req, "timeout while creating key set")
+            },
+
+            /**
+             * Import key.
+             *
+             * @returns {Promise<Object>}
+             */
+            importKey: async function (req) {
+                return invoke(aw, pending, this.pkgname, "ImportKey", req, "timeout while importing key")
+            },
+        },
+
+        /**
+         * Key Management Service - Refer to [OpenAPI spec](docs/rest/openapi_spec.md#generate-openapi-spec) for
+         * input params and output return json values.
+         */
+        legacykms: {
+            pkgname: "legacykms",
 
             /**
              * Create key set.

@@ -13,6 +13,9 @@ const (
 	// For JWE: the cryptographic algorithm used to encrypt or determine the value of the CEK.
 	HeaderAlgorithm = "alg" // string
 
+	// HeaderEncryption identifies the JWE content encryption algorithm
+	HeaderEncryption = "enc" // string
+
 	// HeaderJWKSetURL is a URI that refers to a resource for a set of JSON-encoded public keys, one of which:
 	// For JWS: corresponds to the key used to digitally sign the JWS.
 	// For JWE: corresponds to the public key to which the JWE was encrypted.
@@ -81,9 +84,14 @@ func (h Headers) KeyID() (string, bool) {
 	return h.stringValue(HeaderKeyID)
 }
 
-// Algorithm gets Key ID from JOSE headers.
+// Algorithm gets Algorithm from JOSE headers.
 func (h Headers) Algorithm() (string, bool) {
 	return h.stringValue(HeaderAlgorithm)
+}
+
+// Encryption gets content encryption algorithm from JOSE headers.
+func (h Headers) Encryption() (string, bool) {
+	return h.stringValue(HeaderEncryption)
 }
 
 func (h Headers) stringValue(key string) (string, bool) {

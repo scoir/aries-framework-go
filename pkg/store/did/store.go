@@ -6,7 +6,6 @@ SPDX-License-Identifier: Apache-2.0
 package did
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -22,7 +21,7 @@ const (
 	didNameKeyPattern = didNameKey + "%s"
 
 	// limitPattern for the iterator
-	limitPattern = "%s~"
+	limitPattern = "%s" + storage.EndKeySuffix
 )
 
 // ErrDIDNotFound signals that the entry for the given DID and key is not present in the store.
@@ -85,9 +84,7 @@ func (s *Store) GetDID(id string) (*did.Doc, error) {
 		return nil, fmt.Errorf("failed to get did doc: %w", err)
 	}
 
-	didDoc := &did.Doc{}
-	err = json.Unmarshal(docBytes, didDoc)
-
+	didDoc, err := did.ParseDocument(docBytes)
 	if err != nil {
 		return nil, fmt.Errorf("umarshalling didDoc failed: %w", err)
 	}

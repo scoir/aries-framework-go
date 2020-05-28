@@ -8,17 +8,18 @@ package introduce
 
 import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 )
 
 // Proposal defines proposal request
 type Proposal struct {
-	Type   string            `json:"@type,omitempty"`
-	ID     string            `json:"@id,omitempty"`
-	To     *To               `json:"to,omitempty"`
-	NWise  bool              `json:"nwise,omitempty"`
-	Thread *decorator.Thread `json:"~thread,omitempty"`
-	Timing *decorator.Timing `json:"~timing,omitempty"`
+	Type     string            `json:"@type,omitempty"`
+	ID       string            `json:"@id,omitempty"`
+	To       *To               `json:"to,omitempty"`
+	NWise    bool              `json:"nwise,omitempty"`
+	Thread   *decorator.Thread `json:"~thread,omitempty"`
+	Timing   *decorator.Timing `json:"~timing,omitempty"`
+	Goal     string            `json:"goal,omitempty"`
+	GoalCode string            `json:"goal-code,omitempty"`
 }
 
 // To introducee descriptor keeps information about the introduction
@@ -83,9 +84,10 @@ type Request struct {
 
 // Response message that introducee usually sends in response to an introduction proposal
 type Response struct {
-	Type       string                  `json:"@type,omitempty"`
-	ID         string                  `json:"@id,omitempty"`
-	Thread     *decorator.Thread       `json:"~thread,omitempty"`
-	Approve    bool                    `json:"approve,omitempty"`
-	Invitation *didexchange.Invitation `json:"invitation,omitempty"`
+	Type        string                  `json:"@type,omitempty"`
+	ID          string                  `json:"@id,omitempty"`
+	Thread      *decorator.Thread       `json:"~thread,omitempty"`
+	Approve     bool                    `json:"approve,omitempty"`
+	OOBMessage  map[string]interface{}  `json:"oob-message,omitempty"`
+	Attachments []*decorator.Attachment `json:"~attach,omitempty"`
 }

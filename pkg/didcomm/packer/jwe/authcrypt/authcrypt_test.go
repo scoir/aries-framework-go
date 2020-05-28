@@ -466,7 +466,7 @@ func TestEncrypt(t *testing.T) {
 		jwe.Tag = validJwe.Tag
 
 		// update jwe with bad recipient spk (JWE format)
-		jwe.Recipients[0].Header.SPK = "badSPK!"
+		jwe.Recipients[0].Header.SPK = []byte(`"badSPK!"`)
 		enc, e = json.Marshal(jwe)
 		require.NoError(t, e)
 		// decrypt with bad tag
@@ -570,9 +570,9 @@ func TestEncrypt(t *testing.T) {
 
 func deepCopy(envelope, envelope2 *Envelope) {
 	for _, r := range envelope2.Recipients {
-		newRe := jose.Recipient{
+		newRe := &jose.Recipient{
 			EncryptedKey: r.EncryptedKey,
-			Header: jose.RecipientHeaders{
+			Header: &jose.RecipientHeaders{
 				APU: r.Header.APU,
 				KID: r.Header.KID,
 				IV:  r.Header.IV,

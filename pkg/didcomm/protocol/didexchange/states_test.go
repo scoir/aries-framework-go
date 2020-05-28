@@ -24,9 +24,12 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/model"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/mediator"
 	diddoc "github.com/hyperledger/aries-framework-go/pkg/doc/did"
+	"github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
+	mockdispatcher "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/dispatcher"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol"
-	mockroute "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol/route"
+	mockroute "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol/mediator"
 	mockdiddoc "github.com/hyperledger/aries-framework-go/pkg/mock/diddoc"
 	mockstorage "github.com/hyperledger/aries-framework-go/pkg/mock/storage"
 	mockvdri "github.com/hyperledger/aries-framework-go/pkg/mock/vdri"
@@ -104,7 +107,7 @@ func TestCompletedState(t *testing.T) {
 
 func TestAbandonedState(t *testing.T) {
 	abandoned := &abandoned{}
-	require.Equal(t, stateNameAbandoned, abandoned.Name())
+	require.Equal(t, StateIDAbandoned, abandoned.Name())
 	require.False(t, abandoned.CanTransitionTo(&null{}))
 	require.False(t, abandoned.CanTransitionTo(&invited{}))
 	require.False(t, abandoned.CanTransitionTo(&requested{}))
@@ -296,7 +299,7 @@ func TestRequestedState_Execute(t *testing.T) {
 		msg, err := service.ParseDIDCommMsgMap(invitationPayloadBytes)
 		require.NoError(t, err)
 		// nolint: govet
-		thid, err := threadID(msg)
+		thid, err := msg.ThreadID()
 		require.NoError(t, err)
 		connRec, _, _, e := (&requested{}).ExecuteInbound(&stateMachineMsg{
 			DIDCommMsg: msg,
@@ -309,10 +312,10 @@ func TestRequestedState_Execute(t *testing.T) {
 		ctx := getContext(t, &prov)
 		connRec, followup, action, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
 			DIDCommMsg: service.NewDIDCommMsgMap(&OOBInvitation{
-				ID:       uuid.New().String(),
-				Type:     oobMsgType,
-				ThreadID: uuid.New().String(),
-				Label:    "test",
+				ID:         uuid.New().String(),
+				Type:       oobMsgType,
+				ThreadID:   uuid.New().String(),
+				TheirLabel: "test",
 				Target: &diddoc.Service{
 					ID:              uuid.New().String(),
 					Type:            "did-communication",
@@ -327,6 +330,139 @@ func TestRequestedState_Execute(t *testing.T) {
 		require.NotEmpty(t, connRec.MyDID)
 		require.Equal(t, &noOp{}, followup)
 		require.NotNil(t, action)
+	})
+	t.Run("handle inbound oob invitations with label", func(t *testing.T) {
+		expected := "my test label"
+		dispatched := false
+		ctx := getContext(t, &prov)
+		ctx.outboundDispatcher = &mockdispatcher.MockOutbound{
+			ValidateSend: func(msg interface{}, _ string, _ *service.Destination) error {
+				dispatched = true
+				result, ok := msg.(*Request)
+				require.True(t, ok)
+				require.Equal(t, expected, result.Label)
+				return nil
+			},
+		}
+		inv := newOOBInvite(newServiceBlock())
+		inv.MyLabel = expected
+		_, _, action, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: service.NewDIDCommMsgMap(inv),
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.NoError(t, err)
+		require.NotNil(t, action)
+		err = action()
+		require.NoError(t, err)
+		require.True(t, dispatched)
+	})
+	t.Run("handle inbound oob invitations - register recipient keys in router", func(t *testing.T) {
+		expected := "my test key"
+		registered := false
+		ctx := getContext(t, &prov)
+		doc := createDIDDoc()
+		doc.Service = []diddoc.Service{{
+			Type:            "did-communication",
+			ServiceEndpoint: "http://test.com",
+			RecipientKeys:   []string{expected},
+		}}
+		ctx.vdriRegistry = &mockvdri.MockVDRIRegistry{
+			CreateValue: doc,
+		}
+		ctx.routeSvc = &mockroute.MockMediatorSvc{
+			RoutingKeys:    []string{expected},
+			RouterEndpoint: "http://blah.com",
+			AddKeyFunc: func(result string) error {
+				require.Equal(t, expected, result)
+				registered = true
+				return nil
+			},
+		}
+		_, _, _, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: service.NewDIDCommMsgMap(newOOBInvite(newServiceBlock())),
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.NoError(t, err)
+		require.True(t, registered)
+	})
+	t.Run("handle inbound oob invitations - use routing info to create my did", func(t *testing.T) {
+		expected := mediator.NewConfig("http://test.com", []string{"my-test-key"})
+		created := false
+		ctx := getContext(t, &prov)
+		ctx.routeSvc = &mockroute.MockMediatorSvc{
+			RouterEndpoint: expected.Endpoint(),
+			RoutingKeys:    expected.Keys(),
+		}
+		ctx.vdriRegistry = &mockvdri.MockVDRIRegistry{
+			CreateFunc: func(_ string, options ...vdri.DocOpts) (*diddoc.Doc, error) {
+				created = true
+				result := &vdri.CreateDIDOpts{}
+
+				for _, opt := range options {
+					opt(result)
+				}
+
+				require.Equal(t, expected.Keys(), result.RoutingKeys)
+				require.Equal(t, expected.Endpoint(), result.ServiceEndpoint)
+				return createDIDDoc(), nil
+			},
+		}
+		_, _, _, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: service.NewDIDCommMsgMap(newOOBInvite(newServiceBlock())),
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.NoError(t, err)
+		require.True(t, created)
+	})
+	t.Run("handling invitations fails if my diddoc does not have a valid didcomm service", func(t *testing.T) {
+		msg, err := service.ParseDIDCommMsgMap(invitationPayloadBytes)
+		require.NoError(t, err)
+		ctx := getContext(t, &prov)
+		myDoc := createDIDDoc()
+		myDoc.Service = []diddoc.Service{{
+			ID:              uuid.New().String(),
+			Type:            "invalid",
+			Priority:        0,
+			RecipientKeys:   nil,
+			RoutingKeys:     nil,
+			ServiceEndpoint: "",
+		}}
+		ctx.vdriRegistry = &mockvdri.MockVDRIRegistry{CreateValue: myDoc}
+		_, _, _, err = (&requested{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: msg,
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.Error(t, err)
+	})
+	t.Run("handling OOB invitations fails if my diddoc does not have a valid didcomm service", func(t *testing.T) {
+		ctx := getContext(t, &prov)
+		myDoc := createDIDDoc()
+		myDoc.Service = []diddoc.Service{{
+			ID:              uuid.New().String(),
+			Type:            "invalid",
+			Priority:        0,
+			RecipientKeys:   nil,
+			RoutingKeys:     nil,
+			ServiceEndpoint: "",
+		}}
+		ctx.vdriRegistry = &mockvdri.MockVDRIRegistry{CreateValue: myDoc}
+		_, _, _, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: service.NewDIDCommMsgMap(&OOBInvitation{
+				ID:         uuid.New().String(),
+				Type:       oobMsgType,
+				ThreadID:   uuid.New().String(),
+				TheirLabel: "test",
+				Target: &diddoc.Service{
+					ID:              uuid.New().String(),
+					Type:            "did-communication",
+					Priority:        0,
+					RecipientKeys:   []string{"key"},
+					ServiceEndpoint: "http://test.com",
+				},
+			}),
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.Error(t, err)
 	})
 	t.Run("inbound request unmarshalling error", func(t *testing.T) {
 		_, followup, _, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
@@ -346,30 +482,6 @@ func TestRequestedState_Execute(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "create DID error")
 		require.Nil(t, didDoc)
-	})
-	t.Run("handle inbound invitation public key error", func(t *testing.T) {
-		connRec := &connection.Record{
-			State:        (&requested{}).Name(),
-			ThreadID:     "test",
-			ConnectionID: "123",
-		}
-		didDoc := mockdiddoc.GetMockDIDDoc()
-		didDoc.Service[0].RecipientKeys = []string{"invalid"}
-		connectionStore, err := newConnectionStore(&protocol.MockProvider{})
-		require.NoError(t, err)
-		ctx2 := &context{outboundDispatcher: prov.OutboundDispatcher(),
-			vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: didDoc},
-			signer:          &mockSigner{},
-			connectionStore: connectionStore,
-			routeSvc:        &mockroute.MockRouteSvc{},
-		}
-		_, followup, _, err := (&requested{}).ExecuteInbound(&stateMachineMsg{
-			DIDCommMsg: bytesToDIDCommMsg(t, invitationPayloadBytes),
-			connRecord: connRec,
-		}, "", ctx2)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "getting sender verification keys")
-		require.Nil(t, followup)
 	})
 }
 func TestRespondedState_Execute(t *testing.T) {
@@ -425,23 +537,6 @@ func TestRespondedState_Execute(t *testing.T) {
 		require.NotNil(t, connRec)
 		require.Equal(t, (&completed{}).Name(), followup.Name())
 	})
-	t.Run("handle inbound request public key error", func(t *testing.T) {
-		didDoc := mockdiddoc.GetMockDIDDoc()
-		didDoc.Service[0].RecipientKeys = []string{"invalid"}
-		connStore, err := newConnectionStore(&prov)
-		require.NoError(t, err)
-		require.NotNil(t, connStore)
-		ctx2 := &context{outboundDispatcher: prov.OutboundDispatcher(),
-			vdriRegistry: &mockvdri.MockVDRIRegistry{CreateValue: didDoc}, signer: &mockSigner{},
-			connectionStore: connStore, routeSvc: &mockroute.MockRouteSvc{}}
-		_, followup, _, err := (&responded{}).ExecuteInbound(&stateMachineMsg{
-			DIDCommMsg: bytesToDIDCommMsg(t, requestPayloadBytes),
-			connRecord: &connection.Record{},
-		}, "", ctx2)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "getting sender verification keys")
-		require.Nil(t, followup)
-	})
 
 	t.Run("handle inbound request unmarshalling error", func(t *testing.T) {
 		_, followup, _, err := (&responded{}).ExecuteInbound(&stateMachineMsg{
@@ -450,6 +545,25 @@ func TestRespondedState_Execute(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "JSON unmarshalling of request")
 		require.Nil(t, followup)
+	})
+
+	t.Run("fails if my did has an invalid didcomm service entry", func(t *testing.T) {
+		ctx := getContext(t, &prov)
+		myDoc := createDIDDoc()
+		myDoc.Service = []diddoc.Service{{
+			ID:              uuid.New().String(),
+			Type:            "invalid",
+			Priority:        0,
+			RecipientKeys:   nil,
+			RoutingKeys:     nil,
+			ServiceEndpoint: "",
+		}}
+		ctx.vdriRegistry = &mockvdri.MockVDRIRegistry{CreateValue: myDoc}
+		_, _, _, err := (&responded{}).ExecuteInbound(&stateMachineMsg{
+			DIDCommMsg: bytesToDIDCommMsg(t, requestPayloadBytes),
+			connRecord: &connection.Record{},
+		}, "", ctx)
+		require.Error(t, err)
 	})
 }
 func TestAbandonedState_Execute(t *testing.T) {
@@ -740,21 +854,6 @@ func TestPrepareConnectionSignature(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, c.DID, sigDataConnection.DID)
 	})
-	t.Run("implicit invitation with DID - recipient key error", func(t *testing.T) {
-		newDidDoc.PublicKey = nil
-		connStore, err := newConnectionStore(&prov)
-		require.NoError(t, err)
-		require.NotNil(t, connStore)
-		ctx2 := &context{outboundDispatcher: prov.OutboundDispatcher(),
-			vdriRegistry:    &mockvdri.MockVDRIRegistry{ResolveValue: newDidDoc},
-			signer:          &mockSigner{privateKey: privKey},
-			connectionStore: connStore,
-		}
-		connectionSignature, err := ctx2.prepareConnectionSignature(c, newDidDoc.ID)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "get recipient keys from did")
-		require.Nil(t, connectionSignature)
-	})
 	t.Run("prepare connection signature get invitation", func(t *testing.T) {
 		connectionSignature, err := ctx.prepareConnectionSignature(c, "test")
 		require.Error(t, err)
@@ -804,11 +903,7 @@ func TestNewRequestFromInvitation(t *testing.T) {
 	t.Run("successful new request from invitation", func(t *testing.T) {
 		prov := getProvider()
 		ctx := getContext(t, &prov)
-		invitationBytes, err := json.Marshal(invitation)
-		require.NoError(t, err)
-		thid, err := threadID(bytesToDIDCommMsg(t, invitationBytes))
-		require.NoError(t, err)
-		_, connRec, err := ctx.handleInboundInvitation(invitation, thid, &options{}, &connection.Record{})
+		_, connRec, err := ctx.handleInboundInvitation(invitation, invitation.ID, &options{}, &connection.Record{})
 		require.NoError(t, err)
 		require.NotNil(t, connRec.MyDID)
 	})
@@ -819,12 +914,7 @@ func TestNewRequestFromInvitation(t *testing.T) {
 		ctx := context{
 			vdriRegistry:    &mockvdri.MockVDRIRegistry{ResolveValue: doc},
 			connectionStore: connectionStore}
-
-		invitationBytes, err := json.Marshal(invitation)
-		require.NoError(t, err)
-		thid, err := threadID(bytesToDIDCommMsg(t, invitationBytes))
-		require.NoError(t, err)
-		_, connRec, err := ctx.handleInboundInvitation(invitation, thid, &options{publicDID: doc.ID},
+		_, connRec, err := ctx.handleInboundInvitation(invitation, invitation.ID, &options{publicDID: doc.ID},
 			&connection.Record{})
 		require.NoError(t, err)
 		require.NotNil(t, connRec.MyDID)
@@ -832,13 +922,9 @@ func TestNewRequestFromInvitation(t *testing.T) {
 	})
 	t.Run("unsuccessful new request from invitation ", func(t *testing.T) {
 		prov := protocol.MockProvider{}
-		ctx := &context{outboundDispatcher: prov.OutboundDispatcher(), routeSvc: &mockroute.MockRouteSvc{},
+		ctx := &context{outboundDispatcher: prov.OutboundDispatcher(), routeSvc: &mockroute.MockMediatorSvc{},
 			vdriRegistry: &mockvdri.MockVDRIRegistry{CreateErr: fmt.Errorf("create DID error")}}
-		invitationBytes, err := json.Marshal(&Invitation{Type: InvitationMsgType})
-		require.NoError(t, err)
-		thid, err := threadID(bytesToDIDCommMsg(t, invitationBytes))
-		require.NoError(t, err)
-		_, connRec, err := ctx.handleInboundInvitation(invitation, thid, &options{}, &connection.Record{})
+		_, connRec, err := ctx.handleInboundInvitation(invitation, invitation.ID, &options{}, &connection.Record{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "create DID error")
 		require.Nil(t, connRec)
@@ -864,7 +950,7 @@ func TestNewResponseFromRequest(t *testing.T) {
 				CreateErr:    fmt.Errorf("create DID error"),
 				ResolveValue: mockdiddoc.GetMockDIDDoc(),
 			},
-			routeSvc: &mockroute.MockRouteSvc{},
+			routeSvc: &mockroute.MockMediatorSvc{},
 		}
 		request := &Request{Connection: &Connection{DID: didDoc.ID, DIDDoc: didDoc}}
 		_, connRec, err := ctx.handleInboundRequest(request, &options{}, &connection.Record{})
@@ -879,7 +965,7 @@ func TestNewResponseFromRequest(t *testing.T) {
 
 		ctx := &context{vdriRegistry: &mockvdri.MockVDRIRegistry{CreateValue: mockdiddoc.GetMockDIDDoc()},
 			signer:          &mockSigner{err: errors.New("sign error")},
-			connectionStore: connStore, routeSvc: &mockroute.MockRouteSvc{}}
+			connectionStore: connStore, routeSvc: &mockroute.MockMediatorSvc{}}
 
 		request, err := createRequest(ctx)
 		require.NoError(t, err)
@@ -949,6 +1035,8 @@ func TestGetInvitationRecipientKey(t *testing.T) {
 	})
 	t.Run("failed to get invitation recipient key", func(t *testing.T) {
 		doc := mockdiddoc.GetMockDIDDoc()
+		_, ok := diddoc.LookupService(doc, "did-communication")
+		require.True(t, ok)
 		ctx := context{vdriRegistry: &mockvdri.MockVDRIRegistry{ResolveValue: doc}}
 		invitation := &Invitation{
 			Type: InvitationMsgType,
@@ -958,7 +1046,7 @@ func TestGetInvitationRecipientKey(t *testing.T) {
 		recKey, err := ctx.getInvitationRecipientKey(invitation)
 		require.NoError(t, err)
 		// TODO fix hardcode base58 https://github.com/hyperledger/aries-framework-go/issues/1207
-		require.Equal(t, base58.Encode(doc.PublicKey[0].Value), recKey)
+		require.Equal(t, doc.Service[0].RecipientKeys[0], recKey)
 	})
 	t.Run("failed to get invitation recipient key", func(t *testing.T) {
 		invitation := &Invitation{
@@ -1042,7 +1130,7 @@ func TestGetDIDDocAndConnection(t *testing.T) {
 	t.Run("error creating peer did", func(t *testing.T) {
 		ctx := context{
 			vdriRegistry: &mockvdri.MockVDRIRegistry{CreateErr: errors.New("creator error")},
-			routeSvc:     &mockroute.MockRouteSvc{},
+			routeSvc:     &mockroute.MockMediatorSvc{},
 		}
 		didDoc, conn, err := ctx.getDIDDocAndConnection("")
 		require.Error(t, err)
@@ -1056,7 +1144,7 @@ func TestGetDIDDocAndConnection(t *testing.T) {
 		ctx := context{
 			vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: mockdiddoc.GetMockDIDDoc()},
 			connectionStore: connectionStore,
-			routeSvc:        &mockroute.MockRouteSvc{},
+			routeSvc:        &mockroute.MockMediatorSvc{},
 		}
 		didDoc, conn, err := ctx.getDIDDocAndConnection("")
 		require.NoError(t, err)
@@ -1079,7 +1167,7 @@ func TestGetDIDDocAndConnection(t *testing.T) {
 		ctx := context{
 			vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: mockdiddoc.GetMockDIDDoc()},
 			connectionStore: connectionStore,
-			routeSvc:        &mockroute.MockRouteSvc{},
+			routeSvc:        &mockroute.MockMediatorSvc{},
 		}
 		didDoc, conn, err := ctx.getDIDDocAndConnection("")
 		require.Error(t, err)
@@ -1094,7 +1182,7 @@ func TestGetDIDDocAndConnection(t *testing.T) {
 		ctx := context{
 			vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: mockdiddoc.GetMockDIDDoc()},
 			connectionStore: connectionStore,
-			routeSvc:        &mockroute.MockRouteSvc{ConfigErr: errors.New("router config error")},
+			routeSvc:        &mockroute.MockMediatorSvc{ConfigErr: errors.New("router config error")},
 		}
 		didDoc, conn, err := ctx.getDIDDocAndConnection("")
 		require.Error(t, err)
@@ -1109,7 +1197,7 @@ func TestGetDIDDocAndConnection(t *testing.T) {
 		ctx := context{
 			vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: mockdiddoc.GetMockDIDDoc()},
 			connectionStore: connectionStore,
-			routeSvc:        &mockroute.MockRouteSvc{AddKeyErr: errors.New("router add key error")},
+			routeSvc:        &mockroute.MockMediatorSvc{AddKeyErr: errors.New("router add key error")},
 		}
 		didDoc, conn, err := ctx.getDIDDocAndConnection("")
 		require.Error(t, err)
@@ -1171,12 +1259,12 @@ func TestGetVerKey(t *testing.T) {
 			},
 		}
 
-		keys, found := diddoc.LookupRecipientKeys(publicDID, didCommServiceType, ed25519KeyType)
+		svc, found := diddoc.LookupService(publicDID, "did-communication")
 		require.True(t, found)
 
 		result, err := ctx.getVerKey(publicDID.ID)
 		require.NoError(t, err)
-		require.Equal(t, keys[0], result)
+		require.Equal(t, svc.RecipientKeys[0], result)
 	})
 	t.Run("fails for oob invitation with no target", func(t *testing.T) {
 		invalid := newOOBInvite(nil)
@@ -1297,7 +1385,7 @@ func getContext(t *testing.T, prov *protocol.MockProvider) *context {
 		vdriRegistry:    &mockvdri.MockVDRIRegistry{CreateValue: createDIDDocWithKey(pubKey)},
 		signer:          &mockSigner{privateKey: privKey},
 		connectionStore: connStore,
-		routeSvc:        &mockroute.MockRouteSvc{},
+		routeSvc:        &mockroute.MockMediatorSvc{},
 	}
 }
 
@@ -1453,11 +1541,11 @@ func newDidExchangeInvite(publicDID string, svc *diddoc.Service) *Invitation {
 
 func newOOBInvite(target interface{}) *OOBInvitation {
 	return &OOBInvitation{
-		ID:       uuid.New().String(),
-		Type:     oobMsgType,
-		ThreadID: uuid.New().String(),
-		Label:    "test",
-		Target:   target,
+		ID:         uuid.New().String(),
+		Type:       oobMsgType,
+		ThreadID:   uuid.New().String(),
+		TheirLabel: "test",
+		Target:     target,
 	}
 }
 

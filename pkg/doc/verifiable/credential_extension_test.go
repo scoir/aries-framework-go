@@ -38,13 +38,18 @@ type UniversityDegreeCredential struct {
 }
 
 func NewUniversityDegreeCredential(vcData []byte, opts ...CredentialOpt) (*UniversityDegreeCredential, error) {
-	cred, credBytes, err := NewCredential(vcData, opts...)
+	cred, err := parseTestCredential(vcData, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("new university degree credential: %w", err)
 	}
 
 	udc := UniversityDegreeCredential{
 		Base: *cred,
+	}
+
+	credBytes, err := json.Marshal(cred)
+	if err != nil {
+		return nil, fmt.Errorf("new university degree credential: %w", err)
 	}
 
 	err = json.Unmarshal(credBytes, &udc)
@@ -133,7 +138,7 @@ func TestCredentialExtensibility(t *testing.T) {
 }
 `
 
-	cred, _, err := NewCredential([]byte(udCredential))
+	cred, err := parseTestCredential([]byte(udCredential))
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 
@@ -146,7 +151,7 @@ func TestCredentialExtensibility(t *testing.T) {
 	// default issuer credential decoder is applied (i.e. not re-written by new custom decoder)
 	require.NotNil(t, cred.Issuer)
 	require.Equal(t, cred.Issuer.ID, "did:example:76e12ec712ebc6f1c221ebfeb1f")
-	require.Equal(t, cred.Issuer.Name, "Example University")
+	require.Equal(t, cred.Issuer.CustomFields["name"], "Example University")
 
 	// new mapping is applied
 	subj := udc.Subject

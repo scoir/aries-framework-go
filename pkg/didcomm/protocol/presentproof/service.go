@@ -17,6 +17,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
+	storeverifiable "github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 )
 
 const (
@@ -50,7 +51,7 @@ type customError struct{ error }
 
 // transitionalPayload keeps payload needed for Continue function to proceed with the action
 type transitionalPayload struct {
-	// protocol state machine identifier
+	// Protocol instance ID
 	PIID      string
 	StateName string
 	Msg       service.DIDCommMsgMap
@@ -62,11 +63,13 @@ type transitionalPayload struct {
 type metaData struct {
 	transitionalPayload
 	state               state
+	presentationNames   []string
 	msgClone            service.DIDCommMsg
 	presentation        *Presentation
 	proposePresentation *ProposePresentation
 	request             *RequestPresentation
 	registryVDRI        vdri.Registry
+	verifiable          storeverifiable.Store
 	// err is used to determine whether callback was stopped
 	// e.g the user received an action event and executes Stop(err) function
 	// in that case `err` is equal to `err` which was passing to Stop function
@@ -75,9 +78,9 @@ type metaData struct {
 
 // Action contains helpful information about action
 type Action struct {
-	// protocol state machine identifier
-	PIID string
-	Msg  service.DIDCommMsgMap
+	// Protocol instance ID
+	PIID string                `json:"piid"`
+	Msg  service.DIDCommMsgMap `json:"msg"`
 }
 
 // Opt describes option signature for the Continue function
@@ -107,11 +110,19 @@ func WithRequestPresentation(msg *RequestPresentation) Opt {
 	}
 }
 
+// WithFriendlyNames allows providing names for the presentations.
+func WithFriendlyNames(names ...string) Opt {
+	return func(md *metaData) {
+		md.presentationNames = names
+	}
+}
+
 // Provider contains dependencies for the protocol and is typically created by using aries.Context()
 type Provider interface {
 	Messenger() service.Messenger
 	StorageProvider() storage.Provider
 	VDRIRegistry() vdri.Registry
+	VerifiableStore() storeverifiable.Store
 }
 
 // Service for the presentproof protocol
@@ -119,6 +130,7 @@ type Service struct {
 	service.Action
 	service.Message
 	store        storage.Store
+	verifiable   storeverifiable.Store
 	callbacks    chan *metaData
 	messenger    service.Messenger
 	registryVDRI vdri.Registry
@@ -131,10 +143,16 @@ func New(p Provider) (*Service, error) {
 		return nil, err
 	}
 
+	vStore := p.VerifiableStore()
+	if vStore == nil {
+		return nil, fmt.Errorf("verifiable store is nil")
+	}
+
 	svc := &Service{
 		messenger:    p.Messenger(),
 		registryVDRI: p.VDRIRegistry(),
 		store:        store,
+		verifiable:   vStore,
 		callbacks:    make(chan *metaData),
 	}
 
@@ -146,6 +164,8 @@ func New(p Provider) (*Service, error) {
 
 // HandleInbound handles inbound message (presentproof protocol)
 func (s *Service) HandleInbound(msg service.DIDCommMsg, myDID, theirDID string) (string, error) {
+	logger.Debugf("input: msg=%+v myDID=%s theirDID=%s", msg, myDID, theirDID)
+
 	msgMap, ok := msg.(service.DIDCommMsgMap)
 	if !ok {
 		return "", errors.New("bad assertion message is not DIDCommMsgMap")
@@ -232,6 +252,7 @@ func (s *Service) doHandle(msg service.DIDCommMsgMap) (*metaData, error) {
 			PIID:      piID,
 		},
 		state:        next,
+		verifiable:   s.verifiable,
 		msgClone:     msg.Clone(),
 		registryVDRI: s.registryVDRI,
 	}, nil
@@ -249,6 +270,8 @@ func (s *Service) startInternalListener() {
 		if msg.err == nil {
 			continue
 		}
+
+		logger.Errorf("failed to handle msgID=%s : %s", msg.Msg.ID(), msg.err)
 
 		msg.state = &abandoning{Code: codeInternalError}
 
@@ -406,7 +429,7 @@ func (s *Service) deleteTransitionalPayload(id string) error {
 func (s *Service) Actions() ([]Action, error) {
 	records := s.store.Iterator(
 		fmt.Sprintf(transitionalPayloadKey, ""),
-		fmt.Sprintf(transitionalPayloadKey, "~"),
+		fmt.Sprintf(transitionalPayloadKey, storage.EndKeySuffix),
 	)
 	defer records.Release()
 
@@ -440,6 +463,7 @@ func (s *Service) ActionContinue(piID string, opt Opt) error {
 		state:               stateFromName(tPayload.StateName),
 		msgClone:            tPayload.Msg.Clone(),
 		registryVDRI:        s.registryVDRI,
+		verifiable:          s.verifiable,
 	}
 
 	if opt != nil {

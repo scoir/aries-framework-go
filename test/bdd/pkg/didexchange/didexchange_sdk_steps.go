@@ -155,7 +155,7 @@ func (d *SDKSteps) WaitForPostEvent(agents, statesValue string) error {
 			select {
 			case <-d.postStatesFlag[agentID][state]:
 			case <-time.After(timeout):
-				return fmt.Errorf("timeout waiting for post state event %s", state)
+				return fmt.Errorf("timeout waiting for %s's post state event '%s'", agentID, state)
 			}
 		}
 	}
@@ -204,8 +204,14 @@ func (d *SDKSteps) validateResolveDID(agentID, theirDID string) error {
 
 // ApproveRequest approves request
 func (d *SDKSteps) ApproveRequest(agentID string) error {
+	c, found := d.nextAction[agentID]
+	if !found {
+		return fmt.Errorf("%s is not registered for request approval", agentID)
+	}
+
 	// sends the signal which automatically handles events
-	d.nextAction[agentID] <- struct{}{}
+	c <- struct{}{}
+
 	return nil
 }
 
@@ -238,6 +244,10 @@ func (copts *clientOptions) Label() string {
 // CreateDIDExchangeClient creates DIDExchangeClient
 func (d *SDKSteps) CreateDIDExchangeClient(agents string) error {
 	for _, agentID := range strings.Split(agents, ",") {
+		if _, exists := d.bddContext.DIDExchangeClients[agentID]; exists {
+			continue
+		}
+
 		// create new did exchange client
 		didexchangeClient, err := didexchange.New(d.bddContext.AgentCtx[agentID])
 		if err != nil {
@@ -246,7 +256,7 @@ func (d *SDKSteps) CreateDIDExchangeClient(agents string) error {
 
 		actionCh := make(chan service.DIDCommAction)
 		if err = didexchangeClient.RegisterActionEvent(actionCh); err != nil {
-			return fmt.Errorf("failed to register action event: %w", err)
+			return fmt.Errorf("%s failed to register action event: %w", agentID, err)
 		}
 
 		d.bddContext.DIDExchangeClients[agentID] = didexchangeClient
@@ -339,6 +349,28 @@ func (d *SDKSteps) performDIDExchange(inviter, invitee string) error {
 		}
 	}
 
+	return d.checkThread(invitee, inviter)
+}
+
+func (d *SDKSteps) checkThread(invitee, inviter string) error {
+	inviteeConn, err := d.bddContext.DIDExchangeClients[invitee].GetConnection(d.connectionID[invitee])
+	if err != nil {
+		return fmt.Errorf("failed to query connection by id: %w", err)
+	}
+
+	inviterConn, err := d.bddContext.DIDExchangeClients[inviter].GetConnection(d.connectionID[inviter])
+	if err != nil {
+		return fmt.Errorf("failed to query connection by id: %w", err)
+	}
+
+	if inviteeConn.ThreadID != inviterConn.ThreadID {
+		return errors.New("threadIDs are different")
+	}
+
+	if inviteeConn.ThreadID != d.invitations[inviter].ID {
+		return errors.New("threadID is not equal to the invitation ID")
+	}
+
 	return nil
 }
 
@@ -357,6 +389,8 @@ func (d *SDKSteps) eventListener(statusCh chan service.StateMsg, agentID string,
 		}
 
 		if e.Type == service.PostState {
+			logger.Debugf("%s has received state event: %+v", agentID, e)
+
 			if e.StateID != "invited" {
 				logger.Debugf("Agent %s done processing %s message \n%s\n*****", agentID, e.Msg.Type(), e.Msg)
 			}

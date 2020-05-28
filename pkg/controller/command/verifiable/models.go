@@ -6,17 +6,26 @@ SPDX-License-Identifier: Apache-2.0
 
 package verifiable
 
-import "github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
+)
 
 // Credential is model for verifiable credential.
 type Credential struct {
 	VerifiableCredential string `json:"verifiableCredential,omitempty"`
 }
 
-// CredentialExt is model for verifiable credential with fields related to command features.
-type CredentialExt struct {
-	Credential
-	Name string `json:"name,omitempty"`
+// PresentationRequest is model for verifiable presentation request.
+type PresentationRequest struct {
+	VerifiableCredentials []json.RawMessage `json:"verifiableCredential,omitempty"`
+	Presentation          json.RawMessage   `json:"presentation,omitempty"`
+	DID                   string            `json:"did,omitempty"`
+	*ProofOptions
+	// SkipVerify can be used to skip verification of `VerifiableCredentials` provided.
+	SkipVerify bool `json:"skipVerify,omitempty"`
 }
 
 // IDArg model
@@ -28,6 +37,49 @@ type IDArg struct {
 	ID string `json:"id"`
 }
 
+// ProofOptions is model to allow the dynamic proofing options by the user.
+type ProofOptions struct {
+	// VerificationMethod is the URI of the verificationMethod used for the proof.
+	VerificationMethod string `json:"verificationMethod,omitempty"`
+	// Created date of the proof. If omitted current system time will be used.
+	Created *time.Time `json:"created,omitempty"`
+	// Domain is operational domain of a digital proof.
+	Domain string `json:"domain,omitempty"`
+	// Challenge is a random or pseudo-random value option authentication
+	Challenge string `json:"challenge,omitempty"`
+	// SignatureType signature type used for signing
+	SignatureType string `json:"signatureType,omitempty"`
+	// proofPurpose is purpose of the proof.
+	proofPurpose string
+}
+
+// CredentialExt is model for verifiable credential with fields related to command features.
+type CredentialExt struct {
+	Credential
+	Name string `json:"name,omitempty"`
+}
+
+// PresentationExt is model for presentation with fields related to command features.
+type PresentationExt struct {
+	Presentation
+	Name string `json:"name,omitempty"`
+}
+
+// PresentationRequestByID model
+//
+// This is used for querying/removing by ID from input json.
+//
+type PresentationRequestByID struct {
+	// ID
+	ID string `json:"id"`
+
+	// DID ID
+	DID string `json:"did"`
+
+	// SignatureType
+	SignatureType string `json:"signatureType"`
+}
+
 // NameArg model
 //
 // This is used for querying by name from input json.
@@ -37,13 +89,13 @@ type NameArg struct {
 	Name string `json:"name"`
 }
 
-// CredentialRecordResult holds the credential records.
-type CredentialRecordResult struct {
+// RecordResult holds the credential records.
+type RecordResult struct {
 	// Result
-	Result []*verifiable.CredentialRecord `json:"result,omitempty"`
+	Result []*verifiable.Record `json:"result,omitempty"`
 }
 
 // Presentation is model for verifiable presentation.
 type Presentation struct {
-	VerifiablePresentation string `json:"verifiablePresentation,omitempty"`
+	VerifiablePresentation json.RawMessage `json:"verifiablePresentation,omitempty"`
 }

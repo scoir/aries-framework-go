@@ -20,13 +20,14 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/client/presentproof"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
-	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/verifiable"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
+	verifiableStore "github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 	"github.com/hyperledger/aries-framework-go/test/bdd/pkg/context"
+	bddverifiable "github.com/hyperledger/aries-framework-go/test/bdd/pkg/verifiable"
 )
 
-const timeout = time.Second * 5
+const timeout = time.Second * 15
 
 const vpStrFromWallet = `
 {
@@ -100,13 +101,47 @@ func (a *SDKSteps) RegisterSteps(s *godog.Suite) {
 	s.Step(`^"([^"]*)" sends a request presentation to the "([^"]*)"$`, a.sendRequestPresentation)
 	s.Step(`^"([^"]*)" sends a propose presentation to the "([^"]*)"$`, a.sendProposePresentation)
 	s.Step(`^"([^"]*)" negotiates about the request presentation with a proposal$`, a.negotiateRequestPresentation)
-	s.Step(`^"([^"]*)" accepts a request and sends a presentation to the Verifier$`, a.acceptRequestPresentation)
+	s.Step(`^"([^"]*)" accepts a request and sends a presentation to the "([^"]*)"$`, a.acceptRequestPresentation)
 	s.Step(`^"([^"]*)" declines a request presentation$`, a.declineRequestPresentation)
 	s.Step(`^"([^"]*)" declines presentation$`, a.declinePresentation)
 	s.Step(`^"([^"]*)" declines a propose presentation$`, a.declineProposePresentation)
 	s.Step(`^"([^"]*)" accepts a proposal and sends a request to the Prover$`, a.acceptProposePresentation)
-	s.Step(`^"([^"]*)" accepts a presentation$`, a.acceptPresentation)
+	s.Step(`^"([^"]*)" accepts a presentation with name "([^"]*)"$`, a.acceptPresentation)
+	s.Step(`^"([^"]*)" checks that presentation is being stored under "([^"]*)" name$`, a.checkPresentation)
 	s.Step(`^"([^"]*)" checks the history of events "([^"]*)"$`, a.checkHistoryEvents)
+}
+
+func (a *SDKSteps) waitFor(agent, name string) error {
+	for {
+		select {
+		case e := <-a.events[agent]:
+			if e.StateID == name {
+				return nil
+			}
+		case <-time.After(timeout):
+			return errors.New("timeout")
+		}
+	}
+}
+
+func (a *SDKSteps) checkPresentation(agent, name string) error {
+	if err := a.waitFor(agent, "done"); err != nil {
+		return err
+	}
+
+	store, err := verifiableStore.New(a.bddContext.AgentCtx[agent])
+	if err != nil {
+		return err
+	}
+
+	ID, err := store.GetPresentationIDByName(name)
+	if err != nil {
+		return err
+	}
+
+	_, err = store.GetPresentation(ID)
+
+	return err
 }
 
 func (a *SDKSteps) checkHistoryEvents(agentID, events string) error {
@@ -124,13 +159,13 @@ func (a *SDKSteps) checkHistoryEvents(agentID, events string) error {
 	return nil
 }
 
-func (a *SDKSteps) sendProposePresentation(agent1, agent2 string) error {
-	conn, err := a.getConnection(agent1, agent2)
+func (a *SDKSteps) sendProposePresentation(prover, verifier string) error {
+	conn, err := a.getConnection(prover, verifier)
 	if err != nil {
 		return err
 	}
 
-	return a.clients[agent1].SendProposePresentation(&presentproof.ProposePresentation{}, conn.MyDID, conn.TheirDID)
+	return a.clients[prover].SendProposePresentation(&presentproof.ProposePresentation{}, conn.MyDID, conn.TheirDID)
 }
 
 func (a *SDKSteps) sendRequestPresentation(agent1, agent2 string) error {
@@ -151,44 +186,43 @@ func (a *SDKSteps) getActionID(agent string) (string, error) {
 	}
 }
 
-func (a *SDKSteps) getPublicDID(agentName string) *did.Doc {
-	return a.bddContext.PublicDIDDocs[agentName]
-}
-
-func (a *SDKSteps) acceptRequestPresentation(agent string) error {
-	PIID, err := a.getActionID(agent)
+func (a *SDKSteps) acceptRequestPresentation(prover, verifier string) error {
+	PIID, err := a.getActionID(prover)
 	if err != nil {
 		return err
 	}
 
-	connections, err := a.bddContext.DIDExchangeClients[agent].QueryConnections(&didexchange.QueryConnectionsParams{})
+	conn, err := a.getConnection(prover, verifier)
 	if err != nil {
-		return fmt.Errorf("query connections: %w", err)
+		return err
 	}
 
-	vp, err := verifiable.NewUnverifiedPresentation(
-		[]byte(fmt.Sprintf(vpStrFromWallet, connections[0].MyDID, connections[0].MyDID)),
-	)
+	vp, err := verifiable.ParseUnverifiedPresentation(
+		[]byte(fmt.Sprintf(vpStrFromWallet, conn.MyDID, conn.MyDID)),
+		verifiable.WithPresJSONLDDocumentLoader(bddverifiable.CachingJSONLDLoader()))
 	if err != nil {
 		return fmt.Errorf("failed to decode VP JSON: %w", err)
 	}
 
-	jwtClaims, err := vp.JWTClaims([]string{connections[0].MyDID}, true)
+	jwtClaims, err := vp.JWTClaims([]string{conn.MyDID}, true)
 	if err != nil {
 		return fmt.Errorf("failed to create JWT claims of VP: %w", err)
 	}
 
-	doc := a.getPublicDID(agent)
-	pubKey := doc.PublicKey[0]
+	doc, err := a.bddContext.AgentCtx[prover].VDRIRegistry().Resolve(conn.MyDID)
+	if err != nil {
+		return err
+	}
 
-	kms := a.bddContext.AgentCtx[agent].Signer()
+	pubKey := doc.PublicKey[0]
+	kms := a.bddContext.AgentCtx[prover].Signer()
 
 	vpJWS, err := jwtClaims.MarshalJWS(verifiable.EdDSA, newSigner(kms, base58.Encode(pubKey.Value)), "")
 	if err != nil {
 		return fmt.Errorf("failed to sign VP inside JWT: %w", err)
 	}
 
-	return a.clients[agent].AcceptRequestPresentation(PIID, &presentproof.Presentation{
+	return a.clients[prover].AcceptRequestPresentation(PIID, &presentproof.Presentation{
 		Presentations: []decorator.Attachment{{
 			Data: decorator.AttachmentData{
 				Base64: base64.StdEncoding.EncodeToString([]byte(vpJWS)),
@@ -224,13 +258,13 @@ func (a *SDKSteps) declinePresentation(agent string) error {
 	return a.clients[agent].DeclinePresentation(PIID, "rejected")
 }
 
-func (a *SDKSteps) acceptPresentation(agent string) error {
+func (a *SDKSteps) acceptPresentation(agent, name string) error {
 	PIID, err := a.getActionID(agent)
 	if err != nil {
 		return err
 	}
 
-	return a.clients[agent].AcceptPresentation(PIID)
+	return a.clients[agent].AcceptPresentation(PIID, name)
 }
 
 func (a *SDKSteps) negotiateRequestPresentation(agent string) error {
@@ -242,13 +276,13 @@ func (a *SDKSteps) negotiateRequestPresentation(agent string) error {
 	return a.clients[agent].NegotiateRequestPresentation(PIID, &presentproof.ProposePresentation{})
 }
 
-func (a *SDKSteps) acceptProposePresentation(agent string) error {
-	PIID, err := a.getActionID(agent)
+func (a *SDKSteps) acceptProposePresentation(verifier string) error {
+	PIID, err := a.getActionID(verifier)
 	if err != nil {
 		return err
 	}
 
-	return a.clients[agent].AcceptProposePresentation(PIID, &presentproof.RequestPresentation{})
+	return a.clients[verifier].AcceptProposePresentation(PIID, &presentproof.RequestPresentation{})
 }
 
 func (a *SDKSteps) createClient(agentID string) error {
@@ -256,7 +290,7 @@ func (a *SDKSteps) createClient(agentID string) error {
 		return nil
 	}
 
-	const stateMsgChanSize = 10
+	const stateMsgChanSize = 12
 
 	client, err := presentproof.New(a.bddContext.AgentCtx[agentID])
 	if err != nil {

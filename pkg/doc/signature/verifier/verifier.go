@@ -7,17 +7,20 @@ package verifier
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 
 	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/proof"
 )
 
-// signatureSuite encapsulates signature suite methods required for signature verification
-type signatureSuite interface {
+// SignatureSuite encapsulates signature suite methods required for signature verification
+type SignatureSuite interface {
 
 	// GetCanonicalDocument will return normalized/canonical version of the document
-	GetCanonicalDocument(doc map[string]interface{}) ([]byte, error)
+	GetCanonicalDocument(doc map[string]interface{}, opts ...jsonld.ProcessorOpts) ([]byte, error)
 
 	// GetDigest returns document digest
 	GetDigest(doc []byte) []byte
@@ -48,19 +51,23 @@ type keyResolver interface {
 
 // DocumentVerifier implements JSON LD document proof verification
 type DocumentVerifier struct {
-	signatureSuites []signatureSuite
+	signatureSuites []SignatureSuite
 	pkResolver      keyResolver
 }
 
 // New returns new instance of document verifier
-func New(resolver keyResolver, mainSuite signatureSuite, extraSuites ...signatureSuite) *DocumentVerifier {
+func New(resolver keyResolver, suites ...SignatureSuite) (*DocumentVerifier, error) {
+	if len(suites) == 0 {
+		return nil, errors.New("at least one suite must be provided")
+	}
+
 	return &DocumentVerifier{
-		signatureSuites: append([]signatureSuite{mainSuite}, extraSuites...),
-		pkResolver:      resolver}
+		signatureSuites: suites,
+		pkResolver:      resolver}, nil
 }
 
 // Verify will verify document proofs
-func (dv *DocumentVerifier) Verify(jsonLdDoc []byte) error {
+func (dv *DocumentVerifier) Verify(jsonLdDoc []byte, opts ...jsonld.ProcessorOpts) error {
 	var jsonLdObject map[string]interface{}
 
 	err := json.Unmarshal(jsonLdDoc, &jsonLdObject)
@@ -68,11 +75,11 @@ func (dv *DocumentVerifier) Verify(jsonLdDoc []byte) error {
 		return fmt.Errorf("failed to unmarshal json ld document: %w", err)
 	}
 
-	return dv.verifyObject(jsonLdObject)
+	return dv.verifyObject(jsonLdObject, opts)
 }
 
 // verifyObject will verify document proofs for JSON LD object
-func (dv *DocumentVerifier) verifyObject(jsonLdObject map[string]interface{}) error {
+func (dv *DocumentVerifier) verifyObject(jsonLdObject map[string]interface{}, opts []jsonld.ProcessorOpts) error {
 	proofs, err := proof.GetProofs(jsonLdObject)
 	if err != nil {
 		return err
@@ -94,7 +101,7 @@ func (dv *DocumentVerifier) verifyObject(jsonLdObject map[string]interface{}) er
 			return err
 		}
 
-		message, err := proof.CreateVerifyData(suite, jsonLdObject, p)
+		message, err := proof.CreateVerifyData(suite, jsonLdObject, p, opts...)
 		if err != nil {
 			return err
 		}
@@ -114,7 +121,7 @@ func (dv *DocumentVerifier) verifyObject(jsonLdObject map[string]interface{}) er
 }
 
 // getSignatureSuite returns signature suite based on signature type
-func (dv *DocumentVerifier) getSignatureSuite(signatureType string) (signatureSuite, error) {
+func (dv *DocumentVerifier) getSignatureSuite(signatureType string) (SignatureSuite, error) {
 	for _, s := range dv.signatureSuites {
 		if s.Accept(signatureType) {
 			return s, nil

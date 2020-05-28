@@ -34,6 +34,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries/api"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
 	mocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/didcomm/common/service"
+	verifiableStoreMocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/store/verifiable"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/msghandler"
 	mockdidexchange "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol/didexchange"
@@ -106,7 +107,7 @@ func TestFramework(t *testing.T) {
 			WithLegacyKMS(func(ctx api.Provider) (api.CloseableKMS, error) {
 				return &mockkms.CloseableKMS{SignMessageValue: []byte("mockValue")}, nil
 			}),
-			WithPacker(func(ctx packer.Provider) (packer.Packer, error) {
+			WithLegacyPacker(func(ctx packer.LegacyProvider) (packer.Packer, error) {
 				return &didcomm.MockAuthCrypt{
 					EncryptValue: func(payload, senderPubKey []byte, recipients [][]byte) (bytes []byte, e error) {
 						return []byte("packed message"), nil
@@ -115,7 +116,7 @@ func TestFramework(t *testing.T) {
 					Type:         "",
 				}, nil
 			},
-				func(ctx packer.Provider) (packer.Packer, error) {
+				func(ctx packer.LegacyProvider) (packer.Packer, error) {
 					return &didcomm.MockAuthCrypt{
 						EncryptValue: nil,
 						Type:         "dummy format",
@@ -406,7 +407,7 @@ func TestFramework(t *testing.T) {
 		s := &noop.NoLock{}
 
 		// final step, create the Aries agent with this secret lock
-		a, err := New(WithSecretLock(s))
+		a, err := New(WithSecretLock(s), WithStoreProvider(storage.NewMockStoreProvider()))
 		require.NoError(t, err)
 		require.NotEmpty(t, a)
 		require.Equal(t, s, a.secretLock)
@@ -449,7 +450,7 @@ func TestFramework(t *testing.T) {
 		require.NotEmpty(t, s)
 
 		// final step, create the Aries agent with this secret lock
-		a, err := New(WithSecretLock(s))
+		a, err := New(WithSecretLock(s), WithStoreProvider(storage.NewMockStoreProvider()))
 		require.NoError(t, err)
 		require.NotEmpty(t, a)
 		require.Equal(t, s, a.secretLock)
@@ -509,7 +510,7 @@ func TestFramework(t *testing.T) {
 		require.NotEmpty(t, s)
 
 		// final step, create the Aries agent with this secret lock
-		a, err := New(WithSecretLock(s))
+		a, err := New(WithSecretLock(s), WithStoreProvider(storage.NewMockStoreProvider()))
 		require.NoError(t, err)
 		require.NotEmpty(t, a)
 		require.Equal(t, s, a.secretLock)
@@ -534,7 +535,7 @@ func TestFramework(t *testing.T) {
 		// finally test New using a KMSCreator function returning the above customKMS
 		a, err = New(WithKMS(func(ctx kms.Provider) (kms.KeyManager, error) {
 			return customKMS, nil
-		}))
+		}), WithStoreProvider(storage.NewMockStoreProvider()))
 		require.NoError(t, err)
 		require.NotEmpty(t, a)
 		require.Equal(t, customKMS, a.kms)
@@ -639,13 +640,25 @@ func TestFramework(t *testing.T) {
 		require.NotNil(t, aries.msgSvcProvider)
 		require.Empty(t, aries.msgSvcProvider.Services())
 	})
+
+	t.Run("test verifiable store option", func(t *testing.T) {
+		path, cleanup := generateTempDir(t)
+		defer cleanup()
+		dbPath = path
+
+		mockStore := &verifiableStoreMocks.MockStore{}
+		// default message service provider
+		aries, err := New(WithVerifiableStore(mockStore))
+		require.NoError(t, err)
+		require.Equal(t, mockStore, aries.verifiableStore)
+	})
 }
 
 func Test_Packager(t *testing.T) {
 	t.Run("test error from packager svc - primary packer", func(t *testing.T) {
 		f, err := New(WithInboundTransport(&mockInboundTransport{}),
 			WithStoreProvider(storage.NewMockStoreProvider()),
-			WithPacker(func(ctx packer.Provider) (packer.Packer, error) {
+			WithLegacyPacker(func(ctx packer.LegacyProvider) (packer.Packer, error) {
 				return nil, fmt.Errorf("error from primary packer")
 			}))
 		require.Error(t, err)
@@ -656,10 +669,10 @@ func Test_Packager(t *testing.T) {
 	t.Run("test error from packager svc - fallback packer", func(t *testing.T) {
 		f, err := New(WithInboundTransport(&mockInboundTransport{}),
 			WithStoreProvider(storage.NewMockStoreProvider()),
-			WithPacker(func(ctx packer.Provider) (packer.Packer, error) {
+			WithLegacyPacker(func(ctx packer.LegacyProvider) (packer.Packer, error) {
 				return nil, nil
 			},
-				func(ctx packer.Provider) (packer.Packer, error) {
+				func(ctx packer.LegacyProvider) (packer.Packer, error) {
 					return nil, fmt.Errorf("error from fallback packer")
 				}))
 		require.Error(t, err)

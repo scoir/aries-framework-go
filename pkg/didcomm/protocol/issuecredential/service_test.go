@@ -19,6 +19,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/model"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/util"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/verifiable"
 	serviceMocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/didcomm/common/service"
 	issuecredentialMocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/didcomm/protocol/issuecredential"
@@ -32,17 +33,120 @@ const (
 	Bob   = "Bob"
 )
 
+func TestService_Use(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	t.Run("Success (one function)", func(t *testing.T) {
+		storeProvider := storageMocks.NewMockProvider(ctrl)
+		storeProvider.EXPECT().OpenStore(gomock.Any()).Return(nil, nil).Times(1)
+
+		provider := issuecredentialMocks.NewMockProvider(ctrl)
+		provider.EXPECT().Messenger().Return(nil)
+		provider.EXPECT().StorageProvider().Return(storeProvider).AnyTimes()
+
+		svc, err := New(provider)
+		require.NoError(t, err)
+		require.NotNil(t, svc)
+
+		meta := &metaData{
+			state: &done{},
+			msgClone: service.NewDIDCommMsgMap(struct {
+				Type string `json:"@type"`
+			}{
+				Type: IssueCredentialMsgType,
+			}),
+			offerCredential:   &OfferCredential{Type: OfferCredentialMsgType},
+			proposeCredential: &ProposeCredential{Type: ProposeCredentialMsgType},
+			issueCredential:   &IssueCredential{Type: IssueCredentialMsgType},
+			credentialNames:   []string{"name"},
+		}
+		var executed bool
+		svc.Use(func(next Handler) Handler {
+			return HandlerFunc(func(metadata MetaData) error {
+				require.Equal(t, meta.msgClone, metadata.Message())
+				require.Equal(t, metadata.Message().Type(), IssueCredentialMsgType)
+				require.Equal(t, meta.offerCredential, metadata.OfferCredential())
+				require.Equal(t, meta.proposeCredential, metadata.ProposeCredential())
+				require.Equal(t, meta.issueCredential, metadata.IssueCredential())
+				require.Equal(t, meta.credentialNames, metadata.CredentialNames())
+				require.Equal(t, meta.state.Name(), metadata.StateName())
+
+				executed = true
+				return next.Handle(metadata)
+			})
+		})
+
+		_, _, err = svc.execute(meta.state, meta)
+		require.EqualError(t, err, "done: ExecuteOutbound is not implemented yet")
+
+		require.True(t, executed)
+	})
+
+	t.Run("Success (two function)", func(t *testing.T) {
+		storeProvider := storageMocks.NewMockProvider(ctrl)
+		storeProvider.EXPECT().OpenStore(gomock.Any()).Return(nil, nil).Times(1)
+
+		provider := issuecredentialMocks.NewMockProvider(ctrl)
+		provider.EXPECT().Messenger().Return(nil)
+		provider.EXPECT().StorageProvider().Return(storeProvider).AnyTimes()
+
+		svc, err := New(provider)
+		require.NoError(t, err)
+		require.NotNil(t, svc)
+
+		var executed bool
+		svc.Use(func(next Handler) Handler {
+			return HandlerFunc(func(metadata MetaData) error {
+				executed = true
+				return next.Handle(metadata)
+			})
+		}, func(next Handler) Handler {
+			return HandlerFunc(func(metadata MetaData) error {
+				require.True(t, executed)
+				return next.Handle(metadata)
+			})
+		})
+
+		_, _, err = svc.execute(&done{}, &metaData{})
+		require.EqualError(t, err, "done: ExecuteOutbound is not implemented yet")
+	})
+
+	t.Run("Failed", func(t *testing.T) {
+		storeProvider := storageMocks.NewMockProvider(ctrl)
+		storeProvider.EXPECT().OpenStore(gomock.Any()).Return(nil, nil).Times(1)
+
+		provider := issuecredentialMocks.NewMockProvider(ctrl)
+		provider.EXPECT().Messenger().Return(nil)
+		provider.EXPECT().StorageProvider().Return(storeProvider).AnyTimes()
+
+		svc, err := New(provider)
+		require.NoError(t, err)
+		require.NotNil(t, svc)
+
+		const msgErr = "error message"
+		svc.Use(func(next Handler) Handler {
+			return HandlerFunc(func(metadata MetaData) error {
+				return errors.New(msgErr)
+			})
+		})
+
+		_, _, err = svc.execute(&done{}, &metaData{})
+		require.EqualError(t, err, "middleware: "+msgErr)
+	})
+}
+
 func TestNew(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	t.Run("Success", func(t *testing.T) {
 		storeProvider := storageMocks.NewMockProvider(ctrl)
-		storeProvider.EXPECT().OpenStore(gomock.Any()).Return(nil, nil).Times(2)
+		storeProvider.EXPECT().OpenStore(gomock.Any()).Return(nil, nil).Times(1)
 
 		provider := issuecredentialMocks.NewMockProvider(ctrl)
 		provider.EXPECT().Messenger().Return(nil)
-		provider.EXPECT().StorageProvider().Return(storeProvider).Times(2)
+		provider.EXPECT().StorageProvider().Return(storeProvider).AnyTimes()
 
 		svc, err := New(provider)
 		require.NoError(t, err)
@@ -587,15 +691,8 @@ func TestService_HandleInbound(t *testing.T) {
 			})
 
 		store.EXPECT().Get(gomock.Any()).Return([]byte("request-sent"), nil)
-		store.EXPECT().Get(gomock.Any()).Return(nil, storage.ErrDataNotFound)
 		store.EXPECT().Put(gomock.Any(), gomock.Any()).Return(nil)
 		store.EXPECT().Delete(gomock.Any()).Return(nil)
-		store.EXPECT().Put(gomock.Any(), gomock.Any()).Return(nil)
-		store.EXPECT().Put(gomock.Any(), gomock.Any()).Do(func(key string, name []byte) error {
-			require.Contains(t, key, "UniversityDegree")
-
-			return nil
-		})
 		store.EXPECT().Put(gomock.Any(), gomock.Any()).Do(func(_ string, name []byte) error {
 			require.Equal(t, "done", string(name))
 
@@ -623,10 +720,10 @@ func TestService_HandleInbound(t *testing.T) {
 						ID string
 					}{ID: "SubjectID"},
 					Issuer: verifiable.Issuer{
-						ID:   "did:example:76e12ec712ebc6f1c221ebfeb1f",
-						Name: "Example University",
+						ID:           "did:example:76e12ec712ebc6f1c221ebfeb1f",
+						CustomFields: verifiable.CustomFields{"name": "Example University"},
 					},
-					Issued:  &issued,
+					Issued:  util.NewTime(issued),
 					Schemas: []verifiable.TypedID{},
 					CustomFields: map[string]interface{}{
 						"referenceNumber": 83294847,

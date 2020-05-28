@@ -21,7 +21,11 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
 	"github.com/hyperledger/aries-framework-go/pkg/secretlock"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
+	"github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 )
+
+// package context creates a framework Provider context to add optional (non default) framework services and provides
+// simple accessor methods to those same services.
 
 // Provider supplies the framework configuration to client objects.
 type Provider struct {
@@ -42,8 +46,23 @@ type Provider struct {
 	messenger              service.MessengerHandler
 	outboundTransports     []transport.OutboundTransport
 	vdriRegistry           vdriapi.Registry
+	verifiableStore        verifiable.Store
 	transportReturnRoute   string
 	frameworkID            string
+}
+
+type outboundHandler struct {
+	services []dispatcher.ProtocolService
+}
+
+func (o *outboundHandler) HandleOutbound(msg service.DIDCommMsg, myDID, theirDID string) error {
+	for _, s := range o.services {
+		if s.Accept(msg.Type()) {
+			return s.HandleOutbound(msg, myDID, theirDID)
+		}
+	}
+
+	return fmt.Errorf("no handlers for msg type %s", msg.Type())
 }
 
 // New instantiates a new context provider.
@@ -126,8 +145,8 @@ func (p *Provider) Signer() legacykms.Signer {
 	return p.legacyKMS
 }
 
-// ServiceEndpoint returns an service endpoint. This endpoint is used in DID
-// Exchange Invitation or DID Document service to send messages to the agent.
+// ServiceEndpoint returns an service endpoint. This endpoint is used in Out-Of-Band messages,
+// DID Exchange Invitations or DID Document service to send messages to the agent.
 func (p *Provider) ServiceEndpoint() string {
 	return p.serviceEndpoint
 }
@@ -186,6 +205,14 @@ func (p *Provider) InboundMessageHandler() transport.InboundMessageHandler {
 	}
 }
 
+// OutboundMessageHandler returns a handler composed of all registered protocol services.
+func (p *Provider) OutboundMessageHandler() service.OutboundHandler {
+	tmp := make([]dispatcher.ProtocolService, len(p.services))
+	copy(tmp, p.services)
+
+	return &outboundHandler{services: tmp}
+}
+
 // StorageProvider return a storage provider.
 func (p *Provider) StorageProvider() storage.Provider {
 	return p.storeProvider
@@ -209,6 +236,11 @@ func (p *Provider) TransportReturnRoute() string {
 // AriesFrameworkID returns an inbound transport endpoint.
 func (p *Provider) AriesFrameworkID() string {
 	return p.frameworkID
+}
+
+// VerifiableStore returns a verifiable credential store.
+func (p *Provider) VerifiableStore() verifiable.Store {
+	return p.verifiableStore
 }
 
 // ProviderOption configures the framework.
@@ -360,6 +392,14 @@ func WithAriesFrameworkID(id string) ProviderOption {
 func WithMessageServiceProvider(msv api.MessageServiceProvider) ProviderOption {
 	return func(opts *Provider) error {
 		opts.msgSvcProvider = msv
+		return nil
+	}
+}
+
+// WithVerifiableStore injects a verifiable credential store
+func WithVerifiableStore(store verifiable.Store) ProviderOption {
+	return func(opts *Provider) error {
+		opts.verifiableStore = store
 		return nil
 	}
 }

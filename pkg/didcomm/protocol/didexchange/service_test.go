@@ -20,10 +20,10 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/model"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/mediator"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol"
-	mockroute "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol/route"
+	mockroute "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol/mediator"
 	mockdiddoc "github.com/hyperledger/aries-framework-go/pkg/mock/diddoc"
 	mockstorage "github.com/hyperledger/aries-framework-go/pkg/mock/storage"
 	mockvdri "github.com/hyperledger/aries-framework-go/pkg/mock/vdri"
@@ -45,7 +45,7 @@ func TestService_Name(t *testing.T) {
 	t.Run("test success", func(t *testing.T) {
 		prov, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestService_Handle_Inviter(t *testing.T) {
 	prov := &protocol.MockProvider{
 		StoreProvider: mockstorage.NewCustomMockStoreProvider(mockStore),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	}
 	pubKey, privKey := generateKeyPair()
@@ -232,7 +232,7 @@ func TestService_Handle_Invitee(t *testing.T) {
 	prov := &protocol.MockProvider{StoreProvider: store,
 		TransientStoreProvider: transientStore,
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	}
 	pubKey, privKey := generateKeyPair()
@@ -347,9 +347,9 @@ func handleMessagesInvitee(statusCh chan service.StateMsg, requestedCh chan stri
 	for e := range statusCh {
 		if e.Type == service.PostState {
 			// receive the events
-			if e.StateID == stateNameCompleted {
+			if e.StateID == StateIDCompleted {
 				close(completedCh)
-			} else if e.StateID == stateNameRequested {
+			} else if e.StateID == StateIDRequested {
 				prop, ok := e.Properties.(event)
 				if !ok {
 					panic("Failed to cast the event properties to service.Event")
@@ -365,7 +365,7 @@ func TestService_Handle_EdgeCases(t *testing.T) {
 	t.Run("handleInbound - must not transition to same state", func(t *testing.T) {
 		s, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -391,36 +391,12 @@ func TestService_Handle_EdgeCases(t *testing.T) {
 			"null -> responded")
 	})
 
-	t.Run("handleInbound - threadID error", func(t *testing.T) {
-		svc, err := New(&protocol.MockProvider{
-			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
-			},
-		})
-		require.NoError(t, err)
-
-		err = svc.RegisterActionEvent(make(chan service.DIDCommAction))
-		require.NoError(t, err)
-
-		requestBytes, err := json.Marshal(&Request{
-			Type: RequestMsgType,
-		})
-		require.NoError(t, err)
-
-		didMsg, err := service.ParseDIDCommMsgMap(requestBytes)
-		require.NoError(t, err)
-
-		_, err = svc.HandleInbound(didMsg, "", "")
-		require.Error(t, err)
-		require.Equal(t, err.Error(), "threadID not found")
-	})
-
 	t.Run("handleInbound - connection record error", func(t *testing.T) {
 		transientStore := &mockstorage.MockStore{Store: make(map[string][]byte), ErrPut: errors.New("db error")}
 		prov := &protocol.MockProvider{
 			TransientStoreProvider: mockstorage.NewCustomMockStoreProvider(transientStore),
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		}
 		svc, err := New(prov)
@@ -441,7 +417,7 @@ func TestService_Handle_EdgeCases(t *testing.T) {
 	t.Run("handleInbound - no error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -494,22 +470,6 @@ func TestService_Accept(t *testing.T) {
 	require.Equal(t, true, s.Accept("https://didcomm.org/didexchange/1.0/response"))
 	require.Equal(t, true, s.Accept("https://didcomm.org/didexchange/1.0/ack"))
 	require.Equal(t, false, s.Accept("unsupported msg type"))
-}
-
-func TestService_threadID(t *testing.T) {
-	t.Run("returns new thid for ", func(t *testing.T) {
-		didMsg := service.NewDIDCommMsgMap(Invitation{Type: InvitationMsgType})
-		thid, err := threadID(didMsg)
-		require.NoError(t, err)
-		require.NotNil(t, thid)
-	})
-
-	t.Run("returns unmarshall error", func(t *testing.T) {
-		didMsg := service.NewDIDCommMsgMap(Request{Type: RequestMsgType})
-		_, err := threadID(didMsg)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "threadID not found")
-	})
 }
 
 func TestService_CurrentState(t *testing.T) {
@@ -641,7 +601,7 @@ func randomString() string {
 func TestEventsSuccess(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -660,7 +620,7 @@ func TestEventsSuccess(t *testing.T) {
 
 	go func() {
 		for e := range statusCh {
-			if e.Type == service.PostState && e.StateID == stateNameRequested {
+			if e.Type == service.PostState && e.StateID == StateIDRequested {
 				done <- struct{}{}
 			}
 		}
@@ -696,7 +656,7 @@ func TestContinueWithPublicDID(t *testing.T) {
 	didDoc := mockdiddoc.GetMockDIDDoc()
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -749,7 +709,7 @@ func (to *testOptions) Label() string {
 func TestEventsUserError(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -770,7 +730,7 @@ func TestEventsUserError(t *testing.T) {
 			case e := <-actionCh:
 				e.Stop(errors.New("invalid id"))
 			case e := <-statusCh:
-				if e.Type == service.PostState && e.StateID == stateNameAbandoned {
+				if e.Type == service.PostState && e.StateID == StateIDAbandoned {
 					done <- struct{}{}
 				}
 			}
@@ -797,7 +757,7 @@ func TestEventsUserError(t *testing.T) {
 func TestEventStoreError(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -823,7 +783,7 @@ func TestEventStoreError(t *testing.T) {
 func TestEventProcessCallback(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -865,7 +825,7 @@ func TestServiceErrors(t *testing.T) {
 
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -884,7 +844,7 @@ func TestServiceErrors(t *testing.T) {
 			mockStore,
 		),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	}
 	svc, err = New(prov)
@@ -897,7 +857,7 @@ func TestServiceErrors(t *testing.T) {
 
 	svc, err = New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -919,7 +879,7 @@ func TestServiceErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid state name:")
 
 	// invalid state name
-	message.NextStateName = stateNameInvited
+	message.NextStateName = StateIDInvited
 	message.ConnRecord = &connection.Record{ConnectionID: "abc"}
 	err = svc.handleWithoutAction(message)
 	require.Error(t, err)
@@ -929,7 +889,7 @@ func TestServiceErrors(t *testing.T) {
 func TestHandleOutbound(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -942,7 +902,7 @@ func TestHandleOutbound(t *testing.T) {
 func TestConnectionRecord(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -968,7 +928,7 @@ func TestConnectionRecord(t *testing.T) {
 func TestInvitationRecord(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -1006,7 +966,7 @@ func TestInvitationRecord(t *testing.T) {
 			Store: make(map[string][]byte), ErrPut: errors.New("db error"),
 		}),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NotNil(t, svc.connectionStore)
@@ -1030,7 +990,7 @@ func TestInvitationRecord(t *testing.T) {
 func TestRequestRecord(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -1046,7 +1006,7 @@ func TestRequestRecord(t *testing.T) {
 			&mockstorage.MockStore{Store: make(map[string][]byte), ErrPut: errors.New("db error")},
 		),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NotNil(t, svc.connectionStore)
@@ -1062,7 +1022,7 @@ func TestAcceptExchangeRequest(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		StoreProvider: mockstorage.NewMockStoreProvider(),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -1099,7 +1059,7 @@ func TestAcceptExchangeRequest(t *testing.T) {
 
 	go func() {
 		for e := range statusCh {
-			if e.Type == service.PostState && e.StateID == stateNameResponded {
+			if e.Type == service.PostState && e.StateID == StateIDResponded {
 				done <- struct{}{}
 			}
 		}
@@ -1121,7 +1081,7 @@ func TestAcceptExchangeRequestWithPublicDID(t *testing.T) {
 	svc, err := New(&protocol.MockProvider{
 		StoreProvider: mockstorage.NewMockStoreProvider(),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	})
 	require.NoError(t, err)
@@ -1165,7 +1125,7 @@ func TestAcceptExchangeRequestWithPublicDID(t *testing.T) {
 
 	go func() {
 		for e := range statusCh {
-			if e.Type == service.PostState && e.StateID == stateNameResponded {
+			if e.Type == service.PostState && e.StateID == StateIDResponded {
 				done <- struct{}{}
 			}
 		}
@@ -1188,7 +1148,7 @@ func TestAcceptInvitation(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			StoreProvider: mockstorage.NewMockStoreProvider(),
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1219,11 +1179,11 @@ func TestAcceptInvitation(t *testing.T) {
 					require.Fail(t, "Failed to cast the event properties to service.Event")
 				}
 
-				if e.Type == service.PostState && e.StateID == stateNameInvited {
+				if e.Type == service.PostState && e.StateID == StateIDInvited {
 					require.NoError(t, svc.AcceptInvitation(prop.ConnectionID(), "", ""))
 				}
 
-				if e.Type == service.PostState && e.StateID == stateNameRequested {
+				if e.Type == service.PostState && e.StateID == StateIDRequested {
 					done <- struct{}{}
 				}
 			}
@@ -1252,7 +1212,7 @@ func TestAcceptInvitation(t *testing.T) {
 	t.Run("accept invitation - error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1265,7 +1225,7 @@ func TestAcceptInvitation(t *testing.T) {
 	t.Run("accept invitation - state error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1273,7 +1233,7 @@ func TestAcceptInvitation(t *testing.T) {
 		id := generateRandomID()
 		connRecord := &connection.Record{
 			ConnectionID: id,
-			State:        stateNameRequested,
+			State:        StateIDRequested,
 		}
 		err = svc.connectionStore.saveConnectionRecord(connRecord)
 		require.NoError(t, err)
@@ -1289,7 +1249,7 @@ func TestAcceptInvitation(t *testing.T) {
 	t.Run("accept invitation - no connection record error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1297,7 +1257,7 @@ func TestAcceptInvitation(t *testing.T) {
 		id := generateRandomID()
 		connRecord := &connection.Record{
 			ConnectionID: id,
-			State:        stateNameRequested,
+			State:        StateIDRequested,
 		}
 
 		err = svc.storeEventTransientData(&message{ConnRecord: connRecord})
@@ -1314,7 +1274,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			StoreProvider: mockstorage.NewMockStoreProvider(),
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1351,11 +1311,11 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 					require.Fail(t, "Failed to cast the event properties to service.Event")
 				}
 
-				if e.Type == service.PostState && e.StateID == stateNameInvited {
+				if e.Type == service.PostState && e.StateID == StateIDInvited {
 					require.NoError(t, svc.AcceptInvitation(prop.ConnectionID(), publicDID, "sample-label"))
 				}
 
-				if e.Type == service.PostState && e.StateID == stateNameRequested {
+				if e.Type == service.PostState && e.StateID == StateIDRequested {
 					done <- struct{}{}
 				}
 			}
@@ -1384,7 +1344,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 	t.Run("accept invitation - error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1397,7 +1357,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 	t.Run("accept invitation - state error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1405,7 +1365,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 		id := generateRandomID()
 		connRecord := &connection.Record{
 			ConnectionID: id,
-			State:        stateNameRequested,
+			State:        StateIDRequested,
 		}
 		err = svc.connectionStore.saveConnectionRecord(connRecord)
 		require.NoError(t, err)
@@ -1421,7 +1381,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 	t.Run("accept invitation - no connection record error", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1429,7 +1389,7 @@ func TestAcceptInvitationWithPublicDID(t *testing.T) {
 		id := generateRandomID()
 		connRecord := &connection.Record{
 			ConnectionID: id,
-			State:        stateNameRequested,
+			State:        StateIDRequested,
 		}
 
 		err = svc.storeEventTransientData(&message{ConnRecord: connRecord})
@@ -1445,7 +1405,7 @@ func TestEventTransientData(t *testing.T) {
 	t.Run("event transient data - success", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1466,7 +1426,7 @@ func TestEventTransientData(t *testing.T) {
 	t.Run("event transient data - data not found", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1483,7 +1443,7 @@ func TestEventTransientData(t *testing.T) {
 	t.Run("event transient data - invalid data", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1503,7 +1463,7 @@ func TestNextState(t *testing.T) {
 	t.Run("empty thread ID", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1515,14 +1475,14 @@ func TestNextState(t *testing.T) {
 	t.Run("valid inputs", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
 
 		s, errState := svc.nextState(RequestMsgType, generateRandomID())
 		require.NoError(t, errState)
-		require.Equal(t, stateNameRequested, s.Name())
+		require.Equal(t, StateIDRequested, s.Name())
 	})
 }
 
@@ -1530,7 +1490,7 @@ func TestFetchConnectionRecord(t *testing.T) {
 	t.Run("fetch connection record - invalid payload", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1542,7 +1502,7 @@ func TestFetchConnectionRecord(t *testing.T) {
 	t.Run("fetch connection record - no thread id", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1558,7 +1518,7 @@ func TestFetchConnectionRecord(t *testing.T) {
 	t.Run("fetch connection record - valid input", func(t *testing.T) {
 		svc, err := New(&protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: &mockroute.MockRouteSvc{},
+				mediator.Coordination: &mockroute.MockMediatorSvc{},
 			},
 		})
 		require.NoError(t, err)
@@ -1605,10 +1565,10 @@ func generateRequestMsgPayload(t *testing.T, prov provider, id, invitationID str
 
 func TestService_CreateImplicitInvitation(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		routeSvc := &mockroute.MockRouteSvc{}
+		routeSvc := &mockroute.MockMediatorSvc{}
 		prov := &protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: routeSvc,
+				mediator.Coordination: routeSvc,
 			},
 		}
 		pubKey, _ := generateKeyPair()
@@ -1635,10 +1595,10 @@ func TestService_CreateImplicitInvitation(t *testing.T) {
 	})
 
 	t.Run("error during did resolution", func(t *testing.T) {
-		routeSvc := &mockroute.MockRouteSvc{}
+		routeSvc := &mockroute.MockMediatorSvc{}
 		prov := &protocol.MockProvider{
 			ServiceMap: map[string]interface{}{
-				route.Coordination: routeSvc,
+				mediator.Coordination: routeSvc,
 			},
 		}
 		pubKey, _ := generateKeyPair()
@@ -1666,13 +1626,13 @@ func TestService_CreateImplicitInvitation(t *testing.T) {
 	})
 
 	t.Run("error during saving connection", func(t *testing.T) {
-		routeSvc := &mockroute.MockRouteSvc{}
+		routeSvc := &mockroute.MockMediatorSvc{}
 		transientStore := mockstorage.NewMockStoreProvider()
 		transientStore.Store.ErrPut = errors.New("store put error")
 		prov := &protocol.MockProvider{
 			TransientStoreProvider: transientStore,
 			ServiceMap: map[string]interface{}{
-				route.Coordination: routeSvc,
+				mediator.Coordination: routeSvc,
 			},
 		}
 		pubKey, _ := generateKeyPair()
@@ -1727,10 +1687,10 @@ func TestRespondTo(t *testing.T) {
 		s, err := New(testProvider())
 		require.NoError(t, err)
 		_, err = s.RespondTo(&OOBInvitation{
-			ID:       uuid.New().String(),
-			ThreadID: "",
-			Label:    "test",
-			Target:   "did:example:123",
+			ID:         uuid.New().String(),
+			ThreadID:   "",
+			TheirLabel: "test",
+			Target:     "did:example:123",
 		})
 		require.Error(t, err)
 	})
@@ -1738,10 +1698,10 @@ func TestRespondTo(t *testing.T) {
 		s, err := New(testProvider())
 		require.NoError(t, err)
 		_, err = s.RespondTo(&OOBInvitation{
-			ID:       uuid.New().String(),
-			ThreadID: uuid.New().String(),
-			Label:    "test",
-			Target:   nil,
+			ID:         uuid.New().String(),
+			ThreadID:   uuid.New().String(),
+			TheirLabel: "test",
+			Target:     nil,
 		})
 		require.Error(t, err)
 	})
@@ -1804,10 +1764,10 @@ func TestSave(t *testing.T) {
 
 func newInvitation(target interface{}) *OOBInvitation {
 	return &OOBInvitation{
-		ID:       uuid.New().String(),
-		ThreadID: uuid.New().String(),
-		Label:    "test",
-		Target:   target,
+		ID:         uuid.New().String(),
+		ThreadID:   uuid.New().String(),
+		TheirLabel: "test",
+		Target:     target,
 	}
 }
 
@@ -1815,7 +1775,7 @@ func testProvider() *protocol.MockProvider {
 	return &protocol.MockProvider{
 		StoreProvider: mockstorage.NewMockStoreProvider(),
 		ServiceMap: map[string]interface{}{
-			route.Coordination: &mockroute.MockRouteSvc{},
+			mediator.Coordination: &mockroute.MockMediatorSvc{},
 		},
 	}
 }

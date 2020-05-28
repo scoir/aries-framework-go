@@ -18,7 +18,9 @@ import (
 
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/transport"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 	serviceMocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/didcomm/common/service"
+	verifiableStoreMocks "github.com/hyperledger/aries-framework-go/pkg/internal/gomocks/store/verifiable"
 	mockdidcomm "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm"
 	mockdispatcher "github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/dispatcher"
 	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/msghandler"
@@ -170,6 +172,50 @@ func TestNewProvider(t *testing.T) {
 		}`), "", "")
 
 		require.EqualError(t, errors.Unwrap(err), errTest.Error())
+	})
+
+	t.Run("outbound message handler", func(t *testing.T) {
+		expected := service.NewDIDCommMsgMap(&didexchange.Request{
+			Type: "test-type",
+		})
+		expectedMyDID := "123"
+		expectedTheirDID := "456"
+		handled := false
+		accepted := false
+		ctx, err := New(WithProtocolServices(&mockdidexchange.MockDIDExchangeSvc{
+			HandleOutboundFunc: func(result service.DIDCommMsg, myDID, theirDID string) error {
+				handled = true
+				require.Equal(t, expected, result)
+				require.Equal(t, expectedMyDID, myDID)
+				require.Equal(t, expectedTheirDID, theirDID)
+				return nil
+			},
+			AcceptFunc: func(msgType string) bool {
+				accepted = true
+				require.Equal(t, expected.Type(), msgType)
+				return true
+			},
+		}))
+		require.NoError(t, err)
+		handler := ctx.OutboundMessageHandler()
+		require.NotNil(t, handler)
+		err = handler.HandleOutbound(expected, expectedMyDID, expectedTheirDID)
+		require.NoError(t, err)
+		require.True(t, accepted)
+		require.True(t, handled)
+	})
+
+	t.Run("outbound message handler fails if msg not handles", func(t *testing.T) {
+		ctx, err := New(WithProtocolServices(&mockdidexchange.MockDIDExchangeSvc{
+			AcceptFunc: func(msgType string) bool {
+				return false
+			},
+		}))
+		require.NoError(t, err)
+		err = ctx.OutboundMessageHandler().HandleOutbound(service.NewDIDCommMsgMap(&didexchange.Request{
+			Type: "test",
+		}), "myDID", "theirDID")
+		require.Error(t, err)
 	})
 
 	t.Run("test new with message service", func(t *testing.T) {
@@ -328,11 +374,11 @@ func TestNewProvider(t *testing.T) {
 		require.Equal(t, transportReturnRoute, prov.TransportReturnRoute())
 	})
 
-	t.Run("test new with framework id", func(t *testing.T) {
-		frameworkID := "aries-framework-1"
-		prov, err := New(WithAriesFrameworkID(frameworkID))
+	t.Run("test new with verifiable store", func(t *testing.T) {
+		verifiableStore := verifiableStoreMocks.NewMockStore(ctrl)
+		prov, err := New(WithVerifiableStore(verifiableStore))
 		require.NoError(t, err)
-		require.Equal(t, frameworkID, prov.AriesFrameworkID())
+		require.Equal(t, verifiableStore, prov.VerifiableStore())
 	})
 
 	t.Run("test new with bad (fake) option", func(t *testing.T) {
@@ -341,5 +387,12 @@ func TestNewProvider(t *testing.T) {
 		})
 		require.EqualError(t, err, "option failed: bad option")
 		require.Empty(t, prov)
+	})
+
+	t.Run("test new with framework ID", func(t *testing.T) {
+		frameworkID := "none"
+		prov, err := New(WithAriesFrameworkID(frameworkID))
+		require.NoError(t, err)
+		require.Equal(t, frameworkID, prov.AriesFrameworkID())
 	})
 }

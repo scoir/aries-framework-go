@@ -6,8 +6,6 @@ SPDX-License-Identifier: Apache-2.0
 package verifiable
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,8 +17,11 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/util/signature"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 )
 
@@ -53,15 +54,17 @@ const issuerAsObject = `
 }
 `
 
-func TestNewCredential(t *testing.T) {
+func TestParseCredential(t *testing.T) {
 	t.Run("test creation of new Verifiable Credential from JSON with valid structure", func(t *testing.T) {
-		vc, vcData, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential), WithStrictValidation())
 		require.NoError(t, err)
 		require.NotNil(t, vc)
-		require.NotEmpty(t, vcData)
 
 		// validate @context
-		require.Equal(t, []string{"https://www.w3.org/2018/credentials/v1"}, vc.Context)
+		require.Equal(t, []string{"https://www.w3.org/2018/credentials/v1",
+			"https://www.w3.org/2018/credentials/examples/v1",
+			"https://trustbloc.github.io/context/vc/credentials-v1.jsonld",
+			"https://trustbloc.github.io/context/vc/examples-v1.jsonld"}, vc.Context)
 
 		// validate id
 		require.Equal(t, "http://example.edu/credentials/1872", vc.ID)
@@ -75,15 +78,16 @@ func TestNewCredential(t *testing.T) {
 		// validate not null credential subject
 		require.NotNil(t, vc.Issuer)
 		require.Equal(t, "did:example:76e12ec712ebc6f1c221ebfeb1f", vc.Issuer.ID)
-		require.Equal(t, "Example University", vc.Issuer.Name)
+		require.Equal(t, "Example University", vc.Issuer.CustomFields["name"])
+		require.Equal(t, "data:image/png;base64,iVBOR", vc.Issuer.CustomFields["image"])
 
 		// check issued date
 		expectedIssued := time.Date(2010, time.January, 1, 19, 23, 24, 0, time.UTC)
-		require.Equal(t, &expectedIssued, vc.Issued)
+		require.Equal(t, expectedIssued, vc.Issued.Time)
 
 		// check issued date
 		expectedExpired := time.Date(2020, time.January, 1, 19, 23, 24, 0, time.UTC)
-		require.Equal(t, &expectedExpired, vc.Expired)
+		require.Equal(t, expectedExpired, vc.Expired.Time)
 
 		// check credential status
 		require.NotNil(t, vc.Status)
@@ -103,19 +107,17 @@ func TestNewCredential(t *testing.T) {
 
 	t.Run("test a try to create a new Verifiable Credential from JSON with invalid structure", func(t *testing.T) {
 		emptyJSONDoc := "{}"
-		vc, vcBytes, err := NewCredential([]byte(emptyJSONDoc))
+		vc, err := parseTestCredential([]byte(emptyJSONDoc))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "credential type of unknown structure")
 		require.Nil(t, vc)
-		require.Nil(t, vcBytes)
 	})
 
 	t.Run("test a try to create a new Verifiable Credential from non-JSON doc", func(t *testing.T) {
-		vc, vcBytes, err := NewCredential([]byte("non json"))
+		vc, err := parseTestCredential([]byte("non json"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "new credential")
 		require.Nil(t, vc)
-		require.Nil(t, vcBytes)
 	})
 }
 
@@ -325,7 +327,12 @@ func TestValidateVerCredIssuer(t *testing.T) {
 		var raw rawCredential
 
 		require.NoError(t, json.Unmarshal([]byte(validCredential), &raw))
-		raw.Issuer = "https://example.edu/issuers/14"
+
+		issuerRaw, err := json.Marshal("https://example.edu/issuers/14")
+		require.NoError(t, err)
+
+		raw.Issuer = issuerRaw
+
 		bytes, err := json.Marshal(raw)
 		require.NoError(t, err)
 		err = validateCredentialUsingJSONSchema(bytes, nil, &credentialOpts{})
@@ -347,12 +354,55 @@ func TestValidateVerCredIssuer(t *testing.T) {
 		var raw rawCredential
 
 		require.NoError(t, json.Unmarshal([]byte(validCredential), &raw))
-		raw.Issuer = 55
+
+		issuerRaw, err := json.Marshal(55)
+		require.NoError(t, err)
+
+		raw.Issuer = issuerRaw
+
 		bytes, err := json.Marshal(raw)
 		require.NoError(t, err)
 		err = validateCredentialUsingJSONSchema(bytes, nil, &credentialOpts{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "issuer: Invalid type")
+	})
+
+	t.Run("test verifiable credential with string issuer", func(t *testing.T) {
+		var raw rawCredential
+
+		require.NoError(t, json.Unmarshal([]byte(validCredential), &raw))
+
+		issuerRaw, err := json.Marshal("not-a-uri-issuer")
+		require.NoError(t, err)
+
+		raw.Issuer = issuerRaw
+
+		bytes, err := json.Marshal(raw)
+		require.NoError(t, err)
+		err = validateCredentialUsingJSONSchema(bytes, nil, &credentialOpts{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "issuer: Does not match format 'uri'")
+	})
+
+	t.Run("test verifiable credential with object issuer", func(t *testing.T) {
+		var raw rawCredential
+
+		require.NoError(t, json.Unmarshal([]byte(validCredential), &raw))
+
+		issuerRaw, err := json.Marshal(map[string]interface{}{
+			"id":   "not-a-uri-issuer-id",
+			"name": "University",
+		})
+		require.NoError(t, err)
+
+		raw.Issuer = issuerRaw
+
+		bytes, err := json.Marshal(raw)
+
+		require.NoError(t, err)
+		err = validateCredentialUsingJSONSchema(bytes, nil, &credentialOpts{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "issuer.id: Does not match format 'uri'")
 	})
 }
 
@@ -577,7 +627,7 @@ func TestValidateVerCredRefreshService(t *testing.T) {
 	})
 
 	t.Run("test verifiable credential with undefined id of refresh service", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.RefreshService = []TypedID{{Type: "ManualRefreshService2018"}}
@@ -589,7 +639,7 @@ func TestValidateVerCredRefreshService(t *testing.T) {
 	})
 
 	t.Run("test verifiable credential with undefined type of refresh service", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.RefreshService = []TypedID{{ID: "https://example.edu/refresh/3732"}}
@@ -601,7 +651,7 @@ func TestValidateVerCredRefreshService(t *testing.T) {
 	})
 
 	t.Run("test verifiable credential with invalid URL of id of credential schema", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.RefreshService = []TypedID{{ID: "invalid URL", Type: "ManualRefreshService2018"}}
@@ -616,7 +666,7 @@ func TestValidateVerCredRefreshService(t *testing.T) {
 func TestCredential_MarshalJSON(t *testing.T) {
 	t.Run("round trip conversion of credential with plain issuer", func(t *testing.T) {
 		// setup -> create verifiable credential from json byte data
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 		require.NotEmpty(t, vc)
 
@@ -626,23 +676,23 @@ func TestCredential_MarshalJSON(t *testing.T) {
 		require.NotEmpty(t, byteCred)
 
 		// convert json byte data to verifiable credential
-		cred2, _, err := NewCredential(byteCred)
+		cred2, err := parseTestCredential(byteCred)
 		require.NoError(t, err)
 		require.NotEmpty(t, cred2)
 
-		// verify verifiable credentials created by NewCredential and JSON function matches
+		// verify verifiable credentials created by ParseCredential and JSON function matches
 		require.Equal(t, vc.stringJSON(t), cred2.stringJSON(t))
 	})
 
 	t.Run("round trip conversion of credential with composite issuer", func(t *testing.T) {
 		// setup -> create verifiable credential from json byte data
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 		require.NotEmpty(t, vc)
 
 		// clean issuer name - this means that we have only issuer id and thus it should be serialized
 		// as plain issuer id
-		vc.Issuer.Name = ""
+		delete(vc.Issuer.CustomFields, "name")
 
 		// convert verifiable credential to json byte data
 		byteCred, err := vc.MarshalJSON()
@@ -650,16 +700,16 @@ func TestCredential_MarshalJSON(t *testing.T) {
 		require.NotEmpty(t, byteCred)
 
 		// convert json byte data to verifiable credential
-		cred2, _, err := NewCredential(byteCred)
+		cred2, err := parseTestCredential(byteCred)
 		require.NoError(t, err)
 		require.NotEmpty(t, cred2)
 
-		// verify verifiable credentials created by NewCredential and JSON function matches
+		// verify verifiable credentials created by ParseCredential and JSON function matches
 		require.Equal(t, vc.stringJSON(t), cred2.stringJSON(t))
 	})
 
 	t.Run("Failure in VC marshalling", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.CustomFields = map[string]interface{}{
@@ -697,6 +747,15 @@ func TestWithDisabledExternalSchemaCheck(t *testing.T) {
 	opts := &credentialOpts{}
 	credentialOpt(opts)
 	require.True(t, opts.disabledCustomSchema)
+}
+
+func TestWithDisabledProofCheck(t *testing.T) {
+	credentialOpt := WithDisabledProofCheck()
+	require.NotNil(t, credentialOpt)
+
+	opts := &credentialOpts{}
+	credentialOpt(opts)
+	require.True(t, opts.disabledProofCheck)
 }
 
 func TestWithCredentialSchemaLoader(t *testing.T) {
@@ -799,12 +858,12 @@ func TestWithStrictValidation(t *testing.T) {
 func TestWithEmbeddedSignatureSuites(t *testing.T) {
 	ss := ed25519signature2018.New()
 
-	credentialOpt := WithEmbeddedSignatureSuite(ss)
+	credentialOpt := WithEmbeddedSignatureSuites(ss)
 	require.NotNil(t, credentialOpt)
 
 	opts := &credentialOpts{}
 	credentialOpt(opts)
-	require.Equal(t, ss, opts.ldpSuite)
+	require.Equal(t, []verifier.SignatureSuite{ss}, opts.ldpSuites)
 }
 
 func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
@@ -840,11 +899,10 @@ func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
 	require.NoError(t, mErr)
 
 	t.Run("Applies custom JSON Schema and detects data inconsistency due to missing new required field", func(t *testing.T) { //nolint:lll
-		vc, vcBytes, err := NewCredential(missingReqFieldSchema)
+		vc, err := parseTestCredential(missingReqFieldSchema)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "referenceNumber is required")
 		require.Nil(t, vc)
-		require.Nil(t, vcBytes)
 	})
 
 	t.Run("Applies custom credentialSchema and passes new data inconsistency check", func(t *testing.T) {
@@ -857,9 +915,11 @@ func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
 		customValidSchema, err := json.Marshal(raw)
 		require.NoError(t, err)
 
-		vc, _, err := NewCredential(customValidSchema, WithBaseContextExtendedValidation([]string{
+		vc, err := parseTestCredential(customValidSchema, WithBaseContextExtendedValidation([]string{
 			"https://www.w3.org/2018/credentials/v1",
 			"https://www.w3.org/2018/credentials/examples/v1",
+			"https://trustbloc.github.io/context/vc/credentials-v1.jsonld",
+			"https://trustbloc.github.io/context/vc/examples-v1.jsonld",
 		}, []string{
 			"VerifiableCredential",
 			"UniversityDegreeCredential",
@@ -884,11 +944,10 @@ func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
 		schemaWithInvalidURLToCredentialSchema, err := json.Marshal(raw)
 		require.NoError(t, err)
 
-		vc, vcBytes, err := NewCredential(schemaWithInvalidURLToCredentialSchema)
+		vc, err := parseTestCredential(schemaWithInvalidURLToCredentialSchema)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "load of custom credential schema")
 		require.Nil(t, vc)
-		require.Nil(t, vcBytes)
 	})
 
 	t.Run("Uses default schema if custom credentialSchema is not of 'JsonSchemaValidator2018' type", func(t *testing.T) { //nolint:lll
@@ -902,7 +961,7 @@ func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
 		unsupportedCredentialTypeOfSchema, err := json.Marshal(raw)
 		require.NoError(t, err)
 
-		vc, _, err := NewCredential(unsupportedCredentialTypeOfSchema)
+		vc, err := parseTestCredential(unsupportedCredentialTypeOfSchema)
 		require.NoError(t, err)
 
 		// check credential schema
@@ -912,7 +971,7 @@ func TestCustomCredentialJsonSchemaValidator2018(t *testing.T) {
 	})
 
 	t.Run("Fallback to default schema validation when custom schemas usage is disabled", func(t *testing.T) {
-		_, _, err := NewCredential(missingReqFieldSchema, WithNoCustomSchemaCheck())
+		_, err := parseTestCredential(missingReqFieldSchema, WithNoCustomSchemaCheck())
 
 		// without disabling external schema check we would get an error here
 		require.NoError(t, err)
@@ -1177,64 +1236,133 @@ func TestRawCredentialSerialization(t *testing.T) {
 
 func TestDecodeIssuer(t *testing.T) {
 	t.Run("Decode Issuer defined by ID only", func(t *testing.T) {
-		issuer, err := decodeIssuer("did:example:76e12ec712ebc6f1c221ebfeb1f")
+		issueBytes, err := json.Marshal("did:example:76e12ec712ebc6f1c221ebfeb1f")
+		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
 		require.NoError(t, err)
 		require.Equal(t, "did:example:76e12ec712ebc6f1c221ebfeb1f", issuer.ID)
-		require.Empty(t, issuer.Name)
+		require.Empty(t, issuer.CustomFields)
 	})
 
 	t.Run("Decode Issuer identified by ID and name", func(t *testing.T) {
-		issuer, err := decodeIssuer(map[string]interface{}{
+		issueBytes, err := json.Marshal(map[string]interface{}{
 			"id":   "did:example:76e12ec712ebc6f1c221ebfeb1f",
 			"name": "Example University",
 		})
 		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
+		require.NoError(t, err)
 		require.Equal(t, "did:example:76e12ec712ebc6f1c221ebfeb1f", issuer.ID)
-		require.Equal(t, "Example University", issuer.Name)
+		require.Equal(t, "Example University", issuer.CustomFields["name"])
+	})
+
+	t.Run("Decode Issuer identified by ID and name and image", func(t *testing.T) {
+		issueBytes, err := json.Marshal(map[string]interface{}{
+			"id":    "did:example:76e12ec712ebc6f1c221ebfeb1f",
+			"name":  "Example University",
+			"image": "data:image/png;base64,iVBOR",
+		})
+		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
+		require.NoError(t, err)
+		require.Equal(t, "did:example:76e12ec712ebc6f1c221ebfeb1f", issuer.ID)
+		require.Equal(t, "Example University", issuer.CustomFields["name"])
+		require.Equal(t, "data:image/png;base64,iVBOR", issuer.CustomFields["image"])
 	})
 
 	t.Run("Decode Issuer identified by ID and empty name", func(t *testing.T) {
-		issuer, err := decodeIssuer(map[string]interface{}{
+		issueBytes, err := json.Marshal(map[string]interface{}{
 			"id": "did:example:76e12ec712ebc6f1c221ebfeb1f",
 		})
 		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
+		require.NoError(t, err)
 		require.Equal(t, "did:example:76e12ec712ebc6f1c221ebfeb1f", issuer.ID)
-		require.Empty(t, issuer.Name)
+		require.Empty(t, issuer.CustomFields)
 	})
 
 	t.Run("Decode Issuer identified by empty ID and name", func(t *testing.T) {
-		issuerID, err := decodeIssuer(map[string]interface{}{
+		issueBytes, err := json.Marshal(map[string]interface{}{
 			"name": "Example University",
 		})
+		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
 		require.Error(t, err)
 		require.EqualError(t, err, "issuer ID is not defined")
-		require.Empty(t, issuerID)
+		require.Empty(t, issuer.ID)
 	})
 
 	t.Run("Decode Issuer with invalid type of ID", func(t *testing.T) {
-		issuerID, err := decodeIssuer(map[string]interface{}{
+		issueBytes, err := json.Marshal(map[string]interface{}{
 			"id": 55,
 		})
-		require.Error(t, err)
-		require.EqualError(t, err, "value of key 'id' is not a string")
-		require.Empty(t, issuerID)
-	})
+		require.NoError(t, err)
 
-	t.Run("Decode Issuer with invalid type of name", func(t *testing.T) {
-		issuerID, err := decodeIssuer(map[string]interface{}{
-			"id":   "did:example:76e12ec712ebc6f1c221ebfeb1f",
-			"name": 55,
-		})
+		issuer, err := parseIssuer(issueBytes)
 		require.Error(t, err)
-		require.EqualError(t, err, "value of key 'name' is not a string")
-		require.Empty(t, issuerID)
+		require.Contains(t, err.Error(), "unmarshal Issuer")
+		require.Empty(t, issuer.ID)
 	})
 
 	t.Run("Decode Issuer of invalid type", func(t *testing.T) {
-		issuerID, err := decodeIssuer(77)
+		issueBytes, err := json.Marshal(77)
+		require.NoError(t, err)
+
+		issuer, err := parseIssuer(issueBytes)
+
 		require.Error(t, err)
-		require.EqualError(t, err, "unsupported format of issuer")
-		require.Empty(t, issuerID)
+		require.Contains(t, err.Error(), "unmarshal Issuer")
+		require.Empty(t, issuer.ID)
+	})
+}
+
+func TestMarshalIssuer(t *testing.T) {
+	t.Run("Marshal Issuer with ID defined only", func(t *testing.T) {
+		issuer := Issuer{ID: "did:example:76e12ec712ebc6f1c221ebfeb1f"}
+
+		expectedIssuerBytes, err := json.Marshal("did:example:76e12ec712ebc6f1c221ebfeb1f")
+		require.NoError(t, err)
+
+		issuerBytes, err := issuer.MarshalJSON()
+		require.NoError(t, err)
+		require.Equal(t, expectedIssuerBytes, issuerBytes)
+	})
+
+	t.Run("Marshal Issuer with ID, name, image defined", func(t *testing.T) {
+		issuer := Issuer{
+			ID: "did:example:76e12ec712ebc6f1c221ebfeb1f",
+			CustomFields: CustomFields{
+				"name":  "Example University",
+				"image": "data:image/png;base64,iVBOR",
+			},
+		}
+
+		expectedIssuerBytes, err := json.Marshal(map[string]interface{}{
+			"id":    "did:example:76e12ec712ebc6f1c221ebfeb1f",
+			"name":  "Example University",
+			"image": "data:image/png;base64,iVBOR",
+		})
+		require.NoError(t, err)
+
+		issuerBytes, err := issuer.MarshalJSON()
+		require.NoError(t, err)
+		require.Equal(t, expectedIssuerBytes, issuerBytes)
+	})
+
+	t.Run("corner case: marshal issuer with invalid custom fields", func(t *testing.T) {
+		issuer := Issuer{
+			ID:           "did:example:76e12ec712ebc6f1c221ebfeb1f",
+			CustomFields: map[string]interface{}{"image": map[chan int]interface{}{make(chan int): 777}},
+		}
+
+		issuerBytes, err := issuer.MarshalJSON()
+		require.Error(t, err)
+		require.Empty(t, issuerBytes)
 	})
 }
 
@@ -1275,11 +1403,14 @@ func TestContextToSerialize(t *testing.T) {
 			}))
 }
 
-func TestNewCredentialFromRaw(t *testing.T) {
+func TestParseCredentialFromRaw(t *testing.T) {
+	issuer, err := json.Marshal("did:example:76e12ec712ebc6f1c221ebfeb1f")
+	require.NoError(t, err)
+
 	vc, err := newCredential(&rawCredential{
 		Schema:  44,
 		Type:    "VerifiableCredential",
-		Issuer:  "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:  issuer,
 		Context: "https://www.w3.org/2018/credentials/v1",
 	})
 	require.Error(t, err)
@@ -1288,16 +1419,19 @@ func TestNewCredentialFromRaw(t *testing.T) {
 
 	vc, err = newCredential(&rawCredential{
 		Type:    5,
-		Issuer:  "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:  issuer,
 		Context: "https://www.w3.org/2018/credentials/v1",
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fill credential types from raw")
 	require.Nil(t, vc)
 
+	invalidIssuer, err := json.Marshal(5)
+	require.NoError(t, err)
+
 	vc, err = newCredential(&rawCredential{
 		Type:    "VerifiableCredential",
-		Issuer:  5,
+		Issuer:  invalidIssuer,
 		Context: "https://www.w3.org/2018/credentials/v1",
 	})
 	require.Error(t, err)
@@ -1306,7 +1440,7 @@ func TestNewCredentialFromRaw(t *testing.T) {
 
 	vc, err = newCredential(&rawCredential{
 		Type:    "VerifiableCredential",
-		Issuer:  "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:  issuer,
 		Context: 5, // invalid context
 	})
 	require.Error(t, err)
@@ -1315,7 +1449,7 @@ func TestNewCredentialFromRaw(t *testing.T) {
 
 	vc, err = newCredential(&rawCredential{
 		Type:       "VerifiableCredential",
-		Issuer:     "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:     issuer,
 		Context:    "https://www.w3.org/2018/credentials/v1",
 		TermsOfUse: []byte("not json"),
 	})
@@ -1325,7 +1459,7 @@ func TestNewCredentialFromRaw(t *testing.T) {
 
 	vc, err = newCredential(&rawCredential{
 		Type:           "VerifiableCredential",
-		Issuer:         "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:         issuer,
 		Context:        "https://www.w3.org/2018/credentials/v1",
 		RefreshService: []byte("not json"),
 	})
@@ -1335,7 +1469,7 @@ func TestNewCredentialFromRaw(t *testing.T) {
 
 	vc, err = newCredential(&rawCredential{
 		Type:    "VerifiableCredential",
-		Issuer:  "did:example:76e12ec712ebc6f1c221ebfeb1f",
+		Issuer:  issuer,
 		Context: "https://www.w3.org/2018/credentials/v1",
 		Proof:   []byte("not json"),
 	})
@@ -1344,8 +1478,35 @@ func TestNewCredentialFromRaw(t *testing.T) {
 	require.Nil(t, vc)
 }
 
+func TestParseCredentialFromRaw_PreserveDates(t *testing.T) {
+	vcMap, err := toMap(validCredential)
+	require.NoError(t, err)
+
+	vcMap["issuanceDate"] = "2020-01-01T00:00:00.000Z"
+	vcMap["expirationDate"] = "2030-01-01T00:00:00.000Z"
+
+	credentialWithPreciseDate, err := json.Marshal(vcMap)
+	require.NoError(t, err)
+
+	cred, err := parseTestCredential(credentialWithPreciseDate, WithDisabledProofCheck())
+	require.NoError(t, err)
+	require.NotEmpty(t, cred)
+
+	vcBytes, err := cred.MarshalJSON()
+	require.NoError(t, err)
+
+	// Check that the dates formatting is not corrupted.
+	rawMap, err := toMap(vcBytes)
+	require.NoError(t, err)
+
+	require.Contains(t, rawMap, "issuanceDate")
+	require.Equal(t, rawMap["issuanceDate"], "2020-01-01T00:00:00.000Z")
+	require.Contains(t, rawMap, "expirationDate")
+	require.Equal(t, rawMap["expirationDate"], "2030-01-01T00:00:00.000Z")
+}
+
 func TestCredential_CreatePresentation(t *testing.T) {
-	vc, _, err := NewCredential([]byte(validCredential))
+	vc, err := parseTestCredential([]byte(validCredential))
 	require.NoError(t, err)
 
 	vp, err := vc.Presentation()
@@ -1353,7 +1514,7 @@ func TestCredential_CreatePresentation(t *testing.T) {
 
 	require.Equal(t, []interface{}{vc}, vp.Credentials())
 	require.Equal(t, []string{"VerifiablePresentation"}, vp.Type)
-	require.Equal(t, vc.Context, vp.Context)
+	require.Equal(t, vp.Context, []string{baseContext})
 }
 
 func TestCredential_validateCredential(t *testing.T) {
@@ -1362,15 +1523,16 @@ func TestCredential_validateCredential(t *testing.T) {
 	r := require.New(t)
 
 	t.Run("test jsonldValidation constraint", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
-		require.NoError(t, err)
+		vc, err := parseTestCredential([]byte(validCredential))
+		r.NoError(err)
 
 		vcOpts := &credentialOpts{
-			modelValidationMode:  jsonldValidation,
-			jsonldDocumentLoader: ld.NewDefaultDocumentLoader(nil),
-			strictValidation:     true,
+			modelValidationMode: jsonldValidation,
+			jsonldCredentialOpts: jsonldCredentialOpts{
+				jsonldDocumentLoader: testDocumentLoader,
+			},
+			strictValidation: true,
 		}
-
 		r.NoError(validateCredential(vc, vc.byteJSON(t), vcOpts))
 
 		// add a field which is not defined in the schema
@@ -1381,7 +1543,7 @@ func TestCredential_validateCredential(t *testing.T) {
 	})
 
 	t.Run("test baseContextValidation constraint", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.Types = []string{"VerifiableCredential"}
@@ -1424,7 +1586,7 @@ func TestCredential_validateCredential(t *testing.T) {
 	})
 
 	t.Run("test baseContextExtendedValidation constraint", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.Types = []string{"VerifiableCredential", "AlumniCredential"}
@@ -1510,14 +1672,14 @@ func TestDecodeWithNullValues(t *testing.T) {
 }
 `
 
-	vc, _, err := NewCredential([]byte(vcJSON))
+	vc, err := parseTestCredential([]byte(vcJSON))
 	require.NoError(t, err)
 	require.NotNil(t, vc)
 }
 
 func TestCredential_raw(t *testing.T) {
 	t.Run("Serialize with invalid refresh service", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.RefreshService = []TypedID{{CustomFields: map[string]interface{}{
@@ -1529,7 +1691,7 @@ func TestCredential_raw(t *testing.T) {
 	})
 
 	t.Run("Serialize with invalid terms of use", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.TermsOfUse = []TypedID{{CustomFields: map[string]interface{}{
@@ -1542,7 +1704,7 @@ func TestCredential_raw(t *testing.T) {
 	})
 
 	t.Run("Serialize with invalid proof", func(t *testing.T) {
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		vc.Proofs = []Proof{{
@@ -1555,53 +1717,53 @@ func TestCredential_raw(t *testing.T) {
 	})
 }
 
-func TestNewUnverifiedCredential(t *testing.T) {
-	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+func TestParseUnverifiedCredential(t *testing.T) {
+	signer, err := signature.NewEd25519Signer()
 	require.NoError(t, err)
 
-	t.Run("NewUnverifiedCredential() for JWS", func(t *testing.T) {
+	t.Run("ParseUnverifiedCredential() for JWS", func(t *testing.T) {
 		// Prepare JWS.
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		credClaims, err := vc.JWTClaims(true)
 		require.NoError(t, err)
 
-		jws, err := credClaims.MarshalJWS(EdDSA, getEd25519TestSigner(privKey), "any")
+		jws, err := credClaims.MarshalJWS(EdDSA, signer, "any")
 		require.NoError(t, err)
 
 		// Parse VC with JWS proof.
-		vcUnverified, err := NewUnverifiedCredential([]byte(jws))
+		vcUnverified, err := ParseUnverifiedCredential([]byte(jws))
 		require.NoError(t, err)
 		require.NotNil(t, vcUnverified)
 		require.Equal(t, vc, vcUnverified)
 	})
 
-	t.Run("NewUnverifiedCredential() for Linked Data proof", func(t *testing.T) {
+	t.Run("ParseUnverifiedCredential() for Linked Data proof", func(t *testing.T) {
 		// Prepare JWS.
-		vc, _, err := NewCredential([]byte(validCredential))
+		vc, err := parseTestCredential([]byte(validCredential))
 		require.NoError(t, err)
 
 		created := time.Now()
 		err = vc.AddLinkedDataProof(&LinkedDataProofContext{
 			SignatureType:           "Ed25519Signature2018",
-			Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey))),
+			Suite:                   ed25519signature2018.New(suite.WithSigner(signer)),
 			SignatureRepresentation: SignatureJWS,
 			Created:                 &created,
-		})
+		}, jsonld.WithDocumentLoader(createTestJSONLDDocumentLoader()))
 		require.NoError(t, err)
 
 		vcBytes, err := json.Marshal(vc)
 		require.NoError(t, err)
 
 		// Parse VC with linked data proof.
-		vcUnverified, err := NewUnverifiedCredential(vcBytes)
+		vcUnverified, err := ParseUnverifiedCredential(vcBytes)
 		require.NoError(t, err)
 		require.NotNil(t, vcUnverified)
 		require.Equal(t, vc, vcUnverified)
 	})
 
-	t.Run("NewUnverifiedCredential() error cases", func(t *testing.T) {
+	t.Run("ParseUnverifiedCredential() error cases", func(t *testing.T) {
 		invalidClaims := map[string]interface{}{
 			"iss": 33, // JWT issuer must be a string
 		}
@@ -1614,12 +1776,12 @@ func TestNewUnverifiedCredential(t *testing.T) {
 		invalidUnsecuredJWT, err := marshalUnsecuredJWT(headers, invalidClaims)
 		require.NoError(t, err)
 
-		vc, err := NewUnverifiedCredential([]byte(invalidUnsecuredJWT))
+		vc, err := ParseUnverifiedCredential([]byte(invalidUnsecuredJWT))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "decode new credential")
 		require.Nil(t, vc)
 
-		vc, err = NewUnverifiedCredential([]byte("invalid VC JSON"))
+		vc, err = ParseUnverifiedCredential([]byte("invalid VC JSON"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unmarshal new credential")
 		require.Nil(t, vc)
@@ -1632,9 +1794,36 @@ func TestNewUnverifiedCredential(t *testing.T) {
 		rawVCMapBytes, err := json.Marshal(rawVCMap)
 		require.NoError(t, err)
 
-		vc, err = NewUnverifiedCredential(rawVCMapBytes)
+		vc, err = ParseUnverifiedCredential(rawVCMapBytes)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "build new credential")
 		require.Nil(t, vc)
+	})
+}
+
+func TestMarshalCredential(t *testing.T) {
+	t.Run("test marshalling VC to JSON bytes", func(t *testing.T) {
+		vc, err := parseTestCredential([]byte(validCredential))
+		require.NoError(t, err)
+		require.NotNil(t, vc)
+
+		vcMap, err := toMap(vc)
+		require.NoError(t, err)
+		require.Empty(t, vcMap["credentialSchema"])
+		require.NotEmpty(t, vcMap["@context"])
+		require.NotEmpty(t, vcMap["credentialSubject"])
+		require.NotEmpty(t, vcMap["issuer"])
+		require.NotEmpty(t, vcMap["type"])
+
+		// now set schema and try again
+		vc.Schemas = []TypedID{{ID: "test1"}, {ID: "test2"}}
+
+		vcMap, err = toMap(vc)
+		require.NoError(t, err)
+		require.NotEmpty(t, vcMap["credentialSchema"])
+		require.NotEmpty(t, vcMap["@context"])
+		require.NotEmpty(t, vcMap["credentialSubject"])
+		require.NotEmpty(t, vcMap["issuer"])
+		require.NotEmpty(t, vcMap["type"])
 	})
 }

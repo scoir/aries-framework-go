@@ -10,14 +10,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/messenger"
-
 	"github.com/google/uuid"
 
 	"github.com/hyperledger/aries-framework-go/pkg/crypto"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	commontransport "github.com/hyperledger/aries-framework-go/pkg/didcomm/common/transport"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/dispatcher"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/messenger"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packager"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packer"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
@@ -28,14 +27,13 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"github.com/hyperledger/aries-framework-go/pkg/secretlock"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
+	"github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 	"github.com/hyperledger/aries-framework-go/pkg/vdri"
 	"github.com/hyperledger/aries-framework-go/pkg/vdri/peer"
 )
 
 const (
-	// TODO https://github.com/hyperledger/aries-framework-go/issues/837 - If inbound not present, the endpoint
-	//  should be of routing agent
-	defaultEndpoint     = "routing:endpoint"
+	defaultEndpoint     = "didcomm:transport/queue"
 	defaultMasterKeyURI = "local-lock://default/master/key/"
 )
 
@@ -59,14 +57,15 @@ type Aries struct {
 	crypto                 crypto.Crypto
 	packagerCreator        packager.Creator
 	packager               commontransport.Packager
-	packerCreator          packer.Creator
-	packerCreators         []packer.Creator
+	packerCreator          packer.LegacyCreator
+	packerCreators         []packer.LegacyCreator
 	primaryPacker          packer.Packer
 	packers                []packer.Packer
 	vdriRegistry           vdriapi.Registry
 	vdri                   []vdriapi.VDRI
 	defaultServiceEndpoint string
 	defaultRouterEndpoint string
+	verifiableStore        verifiable.Store
 	transportReturnRoute   string
 	id                     string
 }
@@ -281,14 +280,22 @@ func WithMessageServiceProvider(msv api.MessageServiceProvider) Option {
 	}
 }
 
-// WithPacker injects at least one Packer service into the Aries framework,
+// WithLegacyPacker injects at least one Packer service into the Aries framework,
 // with the primary Packer being used for inbound/outbound communication
 // and the additional packers being available for unpacking inbound messages.
-func WithPacker(primary packer.Creator, additionalPackers ...packer.Creator) Option {
+func WithLegacyPacker(primary packer.LegacyCreator, additionalPackers ...packer.LegacyCreator) Option {
 	return func(opts *Aries) error {
 		opts.packerCreator = primary
 		opts.packerCreators = append(opts.packerCreators, additionalPackers...)
 
+		return nil
+	}
+}
+
+// WithVerifiableStore injects a verifiable credential store
+func WithVerifiableStore(store verifiable.Store) Option {
+	return func(opts *Aries) error {
+		opts.verifiableStore = store
 		return nil
 	}
 }
@@ -301,6 +308,7 @@ func (a *Aries) Context() (*context.Provider, error) {
 		context.WithOutboundTransports(a.outboundTransports...),
 		context.WithProtocolServices(a.services...),
 		context.WithLegacyKMS(a.legacyKMS),
+		context.WithKMS(a.kms),
 		context.WithSecretLock(a.secretLock),
 		context.WithCrypto(a.crypto),
 		context.WithServiceEndpoint(serviceEndpoint(a)),
@@ -313,6 +321,7 @@ func (a *Aries) Context() (*context.Provider, error) {
 		context.WithTransportReturnRoute(a.transportReturnRoute),
 		context.WithAriesFrameworkID(a.id),
 		context.WithMessageServiceProvider(a.msgSvcProvider),
+		context.WithVerifiableStore(a.verifiableStore),
 	)
 }
 
@@ -399,7 +408,10 @@ func createKMS(frameworkOpts *Aries) error {
 
 func createVDRI(frameworkOpts *Aries) error {
 	ctx, err := context.New(
+		// TODO add a better way to use either LegacyKMS or KMS in the registry, for now LegacyKMS will be used by
+		// TODO default until the new Authcrypt packer is created.
 		context.WithLegacyKMS(frameworkOpts.legacyKMS),
+		context.WithKMS(frameworkOpts.kms),
 		context.WithCrypto(frameworkOpts.crypto),
 		context.WithStorageProvider(frameworkOpts.storeProvider),
 		context.WithServiceEndpoint(serviceEndpoint(frameworkOpts)),
@@ -508,6 +520,7 @@ func loadServices(frameworkOpts *Aries) error {
 		context.WithServiceEndpoint(serviceEndpoint(frameworkOpts)),
 		context.WithRouterEndpoint(routingEndpoint(frameworkOpts)),
 		context.WithVDRIRegistry(frameworkOpts.vdriRegistry),
+		context.WithVerifiableStore(frameworkOpts.verifiableStore),
 	)
 
 	if err != nil {

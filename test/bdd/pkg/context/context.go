@@ -12,11 +12,13 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/hyperledger/aries-framework-go/pkg/client/didexchange"
-	"github.com/hyperledger/aries-framework-go/pkg/client/route"
+	"github.com/hyperledger/aries-framework-go/pkg/client/mediator"
+	"github.com/hyperledger/aries-framework-go/pkg/client/outofband"
 	"github.com/hyperledger/aries-framework-go/pkg/common/log"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/messaging/msghandler"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
 )
@@ -25,9 +27,13 @@ var logger = log.New("aries-framework/tests/context")
 
 // BDDContext is a global context shared between different test suites in bddtests
 type BDDContext struct {
+	OutOfBandClients   map[string]*outofband.Client
 	DIDExchangeClients map[string]*didexchange.Client
-	RouteClients       map[string]*route.Client
+	RouteClients       map[string]*mediator.Client
+	RouteCallbacks     map[string]chan interface{}
 	PublicDIDDocs      map[string]*did.Doc
+	PublicKeys         map[string]*jose.JWK
+	KeyHandles         map[string]interface{}
 	PublicDIDs         map[string]string
 	Agents             map[string]*aries.Aries
 	AgentCtx           map[string]*context.Provider
@@ -43,9 +49,13 @@ type BDDContext struct {
 // NewBDDContext create new BDDContext
 func NewBDDContext() *BDDContext {
 	return &BDDContext{
+		OutOfBandClients:   make(map[string]*outofband.Client),
 		DIDExchangeClients: make(map[string]*didexchange.Client),
-		RouteClients:       make(map[string]*route.Client),
+		RouteClients:       make(map[string]*mediator.Client),
+		RouteCallbacks:     make(map[string]chan interface{}),
 		PublicDIDDocs:      make(map[string]*did.Doc),
+		PublicKeys:         make(map[string]*jose.JWK),
+		KeyHandles:         make(map[string]interface{}),
 		PublicDIDs:         make(map[string]string),
 		Agents:             make(map[string]*aries.Aries),
 		AgentCtx:           make(map[string]*context.Provider),

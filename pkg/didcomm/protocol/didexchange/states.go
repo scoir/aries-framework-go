@@ -22,7 +22,7 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/model"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/mediator"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
@@ -34,15 +34,19 @@ import (
 )
 
 const (
-	stateNameNoop      = "noop"
-	stateNameNull      = "null"
-	stateNameInvited   = "invited"
-	stateNameRequested = "requested"
-	stateNameResponded = "responded"
-	stateNameCompleted = "completed"
-	stateNameAbandoned = "abandoned"
+	stateNameNoop = "noop"
+	stateNameNull = "null"
+	// StateIDInvited marks the invited phase of the did-exchange protocol.
+	StateIDInvited = "invited"
+	// StateIDRequested marks the requested phase of the did-exchange protocol.
+	StateIDRequested = "requested"
+	// StateIDResponded marks the responded phase of the did-exchange protocol.
+	StateIDResponded = "responded"
+	// StateIDCompleted marks the completed phase of the did-exchange protocol.
+	StateIDCompleted = "completed"
+	// StateIDAbandoned marks the abandoned phase of the did-exchange protocol.
+	StateIDAbandoned   = "abandoned"
 	ackStatusOK        = "ok"
-	ed25519KeyType     = "Ed25519VerificationKey2018"
 	didCommServiceType = "did-communication"
 	didMethod          = "peer"
 	timestamplen       = 8
@@ -90,15 +94,15 @@ func stateFromName(name string) (state, error) {
 		return &noOp{}, nil
 	case stateNameNull:
 		return &null{}, nil
-	case stateNameInvited:
+	case StateIDInvited:
 		return &invited{}, nil
-	case stateNameRequested:
+	case StateIDRequested:
 		return &requested{}, nil
-	case stateNameResponded:
+	case StateIDResponded:
 		return &responded{}, nil
-	case stateNameCompleted:
+	case StateIDCompleted:
 		return &completed{}, nil
-	case stateNameAbandoned:
+	case StateIDAbandoned:
 		return &abandoned{}, nil
 	default:
 		return nil, fmt.Errorf("invalid state name %s", name)
@@ -130,7 +134,7 @@ func (s *null) Name() string {
 }
 
 func (s *null) CanTransitionTo(next state) bool {
-	return stateNameInvited == next.Name() || stateNameRequested == next.Name()
+	return StateIDInvited == next.Name() || StateIDRequested == next.Name()
 }
 
 func (s *null) ExecuteInbound(msg *stateMachineMsg, thid string, ctx *context) (*connectionstore.Record,
@@ -143,20 +147,18 @@ type invited struct {
 }
 
 func (s *invited) Name() string {
-	return stateNameInvited
+	return StateIDInvited
 }
 
 func (s *invited) CanTransitionTo(next state) bool {
-	return stateNameRequested == next.Name()
+	return StateIDRequested == next.Name()
 }
 
-func (s *invited) ExecuteInbound(msg *stateMachineMsg, thid string, ctx *context) (*connectionstore.Record,
+func (s *invited) ExecuteInbound(msg *stateMachineMsg, _ string, _ *context) (*connectionstore.Record,
 	state, stateAction, error) {
 	if msg.Type() != InvitationMsgType && msg.Type() != oobMsgType {
 		return nil, nil, nil, fmt.Errorf("illegal msg type %s for state %s", msg.Type(), s.Name())
 	}
-
-	msg.connRecord.ThreadID = thid
 
 	return msg.connRecord, &requested{}, func() error { return nil }, nil
 }
@@ -166,18 +168,18 @@ type requested struct {
 }
 
 func (s *requested) Name() string {
-	return stateNameRequested
+	return StateIDRequested
 }
 
 func (s *requested) CanTransitionTo(next state) bool {
-	return stateNameResponded == next.Name()
+	return StateIDResponded == next.Name()
 }
 
 func (s *requested) ExecuteInbound(msg *stateMachineMsg, thid string, ctx *context) (*connectionstore.Record,
 	state, stateAction, error) {
 	switch msg.Type() {
 	case oobMsgType:
-		action, record, err := ctx.handleInboundOOBInvitation(msg, thid)
+		action, record, err := ctx.handleInboundOOBInvitation(msg, thid, msg.options)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to handle inbound oob invitation : %w", err)
 		}
@@ -209,11 +211,11 @@ type responded struct {
 }
 
 func (s *responded) Name() string {
-	return stateNameResponded
+	return StateIDResponded
 }
 
 func (s *responded) CanTransitionTo(next state) bool {
-	return stateNameCompleted == next.Name()
+	return StateIDCompleted == next.Name()
 }
 
 func (s *responded) ExecuteInbound(msg *stateMachineMsg, thid string, ctx *context) (*connectionstore.Record,
@@ -245,7 +247,7 @@ type completed struct {
 }
 
 func (s *completed) Name() string {
-	return stateNameCompleted
+	return StateIDCompleted
 }
 
 func (s *completed) CanTransitionTo(next state) bool {
@@ -282,7 +284,7 @@ type abandoned struct {
 }
 
 func (s *abandoned) Name() string {
-	return stateNameAbandoned
+	return StateIDAbandoned
 }
 
 func (s *abandoned) CanTransitionTo(next state) bool {
@@ -295,42 +297,31 @@ func (s *abandoned) ExecuteInbound(msg *stateMachineMsg, thid string, ctx *conte
 }
 
 func (ctx *context) handleInboundOOBInvitation(
-	msg *stateMachineMsg, thid string) (stateAction, *connectionstore.Record, error) {
-	// get the route configs (pass empty service endpoint, as default service endpoint added in VDRI)
-	myEndpoint, myRoutingKeys, err := route.GetRouterConfig(ctx.routeSvc, "")
+	msg *stateMachineMsg, thid string, options *options) (stateAction, *connectionstore.Record, error) {
+	myDID, conn, err := ctx.getDIDDocAndConnection(getPublicDID(options))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch my routing configuration : %w", err)
-	}
-
-	myDID, err := ctx.vdriRegistry.Create(
-		didMethod,
-		vdri.WithServiceEndpoint(myEndpoint),
-		vdri.WithRoutingKeys(myRoutingKeys),
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create myDID : %w", err)
+		return nil, nil, fmt.Errorf("handleInboundOOBInvitation - failed to get diddoc and connection : %w", err)
 	}
 
 	msg.connRecord.MyDID = myDID.ID
-
-	request := &Request{
-		Type: RequestMsgType,
-		ID:   thid,
-		Connection: &Connection{
-			DID:    myDID.ID,
-			DIDDoc: myDID,
-		},
-		Thread: &decorator.Thread{
-			ID:  thid,
-			PID: msg.connRecord.ParentThreadID,
-		},
-	}
+	msg.connRecord.ThreadID = thid
 
 	oobInvitation := OOBInvitation{}
 
 	err = msg.Decode(&oobInvitation)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode oob invitation : %w", err)
+	}
+
+	request := &Request{
+		Type:       RequestMsgType,
+		ID:         thid,
+		Label:      oobInvitation.MyLabel,
+		Connection: conn,
+		Thread: &decorator.Thread{
+			ID:  thid,
+			PID: msg.connRecord.ParentThreadID,
+		},
 	}
 
 	svc, err := ctx.getServiceBlock(&oobInvitation)
@@ -344,13 +335,14 @@ func (ctx *context) handleInboundOOBInvitation(
 		RoutingKeys:     svc.RoutingKeys,
 	}
 
-	senderVerKeys, ok := did.LookupRecipientKeys(myDID, didCommServiceType, ed25519KeyType)
-	if !ok {
-		return nil, nil, fmt.Errorf("failed to lookup sender verification keys")
+	recipientKey, err := recipientKey(myDID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("handle inbound OOBInvitation : %w", err)
 	}
 
 	return func() error {
-		return ctx.outboundDispatcher.Send(request, senderVerKeys[0], dest)
+		logger.Debugf("dispatching outbound request on thread: %+v", request.Thread)
+		return ctx.outboundDispatcher.Send(request, recipientKey, dest)
 	}, msg.connRecord, nil
 }
 
@@ -384,13 +376,13 @@ func (ctx *context) handleInboundInvitation(invitation *Invitation, thid string,
 	}
 	connRec.MyDID = request.Connection.DID
 
-	senderVerKeys, ok := did.LookupRecipientKeys(didDoc, didCommServiceType, ed25519KeyType)
-	if !ok {
-		return nil, nil, fmt.Errorf("getting sender verification keys")
+	recipientKey, err := recipientKey(didDoc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("handle inbound invitation : %w", err)
 	}
 
 	return func() error {
-		return ctx.outboundDispatcher.Send(request, senderVerKeys[0], destination)
+		return ctx.outboundDispatcher.Send(request, recipientKey, destination)
 	}, connRec, nil
 }
 
@@ -433,14 +425,14 @@ func (ctx *context) handleInboundRequest(request *Request, options *options,
 		return nil, nil, err
 	}
 
-	senderVerKeys, ok := did.LookupRecipientKeys(responseDidDoc, didCommServiceType, ed25519KeyType)
-	if !ok {
-		return nil, nil, fmt.Errorf("getting sender verification keys")
+	senderVerKey, err := recipientKey(responseDidDoc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("handle inbound request : %w", err)
 	}
 
 	// send exchange response
 	return func() error {
-		return ctx.outboundDispatcher.Send(response, senderVerKeys[0], destination)
+		return ctx.outboundDispatcher.Send(response, senderVerKey, destination)
 	}, connRec, nil
 }
 
@@ -452,6 +444,7 @@ func getPublicDID(options *options) string {
 	return options.publicDID
 }
 
+// returns the label given in the options, otherwise an empty string
 func getLabel(options *options) string {
 	if options == nil {
 		return ""
@@ -492,7 +485,7 @@ func (ctx *context) getDIDDocAndConnection(pubDID string) (*did.Doc, *Connection
 	logger.Debugf("creating new '%s' did for connection", didMethod)
 
 	// get the route configs (pass empty service endpoint, as default servie endpoint added in VDRI)
-	serviceEndpoint, routingKeys, err := route.GetRouterConfig(ctx.routeSvc, "")
+	serviceEndpoint, routingKeys, err := mediator.GetRouterConfig(ctx.routeSvc, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("did doc - fetch router config : %w", err)
 	}
@@ -507,12 +500,12 @@ func (ctx *context) getDIDDocAndConnection(pubDID string) (*did.Doc, *Connection
 		return nil, nil, fmt.Errorf("create %s did: %w", didMethod, err)
 	}
 
-	recipientKeys, ok := did.LookupRecipientKeys(newDidDoc, didCommServiceType, ed25519KeyType)
+	svc, ok := did.LookupService(newDidDoc, didCommServiceType)
 	if ok {
-		for _, recKey := range recipientKeys {
+		for _, recKey := range svc.RecipientKeys {
 			// TODO https://github.com/hyperledger/aries-framework-go/issues/1105 Support to Add multiple
 			//  recKeys to the Router
-			if err = route.AddKeyToRouter(ctx.routeSvc, recKey); err != nil {
+			if err = mediator.AddKeyToRouter(ctx.routeSvc, recKey); err != nil {
 				return nil, nil, fmt.Errorf("did doc - add key to the router : %w", err)
 			}
 		}
@@ -625,13 +618,13 @@ func (ctx *context) handleInboundResponse(response *Response) (stateAction, *con
 		return nil, nil, fmt.Errorf("fetching did document: %w", err)
 	}
 
-	senderVerKeys, ok := did.LookupRecipientKeys(myDidDoc, didCommServiceType, ed25519KeyType)
-	if !ok {
-		return nil, nil, fmt.Errorf("getting sender verification keys")
+	recipientKey, err := recipientKey(myDidDoc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("handle inbound response : %w", err)
 	}
 
 	return func() error {
-		return ctx.outboundDispatcher.Send(ack, senderVerKeys[0], destination)
+		return ctx.outboundDispatcher.Send(ack, recipientKey, destination)
 	}, connRecord, nil
 }
 
@@ -655,7 +648,7 @@ func verifySignature(connSignature *ConnectionSignature, recipientKeys string) (
 	pubKey := base58.Decode(recipientKeys)
 
 	// TODO: Replace with signed attachments issue-626
-	suiteVerifier := &ed25519signature2018.PublicKeyVerifier{}
+	suiteVerifier := ed25519signature2018.NewPublicKeyVerifier()
 	signatureSuite := ed25519signature2018.New(suite.WithVerifier(suiteVerifier))
 
 	err = signatureSuite.Verify(&verifier.PublicKey{
@@ -721,12 +714,12 @@ func (ctx *context) getInvitationRecipientKey(invitation *Invitation) (string, e
 			return "", fmt.Errorf("get invitation recipient key: %w", err)
 		}
 
-		recipientKeys, ok := did.LookupRecipientKeys(didDoc, didCommServiceType, ed25519KeyType)
-		if !ok {
-			return "", fmt.Errorf("get recipient keys from did")
+		recipientKey, err := recipientKey(didDoc)
+		if err != nil {
+			return "", fmt.Errorf("getInvitationRecipientKey: %w", err)
 		}
 
-		return recipientKeys[0], nil
+		return recipientKey, nil
 	}
 
 	return invitation.RecipientKeys[0], nil
@@ -819,4 +812,13 @@ func (ctx *context) resolveVerKey(i *OOBInvitation) (string, error) {
 func isDID(str string) bool {
 	const didPrefix = "did:"
 	return strings.HasPrefix(str, didPrefix)
+}
+
+func recipientKey(doc *did.Doc) (string, error) {
+	dest, err := service.CreateDestination(doc)
+	if err != nil {
+		return "", fmt.Errorf("failed to create destination : %w", err)
+	}
+
+	return dest.RecipientKeys[0], nil
 }

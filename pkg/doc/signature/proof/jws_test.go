@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/hyperledger/aries-framework-go/pkg/doc/util"
 )
 
 func Test_getJWTHeader(t *testing.T) {
@@ -31,7 +33,7 @@ func Test_createVerifyJWS(t *testing.T) {
 
 	p := &Proof{
 		Type:         "Ed25519Signature2018",
-		Created:      &created,
+		Created:      util.NewTime(created),
 		JWS:          "eyJ0eXAiOiJK..gFWFOEjXk",
 		ProofPurpose: "assertionMethod",
 	}
@@ -67,10 +69,47 @@ func Test_createVerifyJWS(t *testing.T) {
 }
 
 func TestCreateDetachedJWTHeader(t *testing.T) {
+	getJwtHeaderMap := func(jwtHeaderB64 string) map[string]interface{} {
+		jwtHeaderBytes, err := base64.RawURLEncoding.DecodeString(jwtHeaderB64)
+		require.NoError(t, err)
+
+		var jwtHeaderMap map[string]interface{}
+		err = json.Unmarshal(jwtHeaderBytes, &jwtHeaderMap)
+		require.NoError(t, err)
+
+		return jwtHeaderMap
+	}
+
 	jwtHeader := CreateDetachedJWTHeader(&Proof{
 		Type: "Ed25519Signature2018",
 	})
 	require.NotEmpty(t, jwtHeader)
+
+	jwtHeaderMap := getJwtHeaderMap(jwtHeader)
+	require.Equal(t, "EdDSA", jwtHeaderMap["alg"])
+	require.Equal(t, false, jwtHeaderMap["b64"])
+	require.Equal(t, []interface{}{"b64"}, jwtHeaderMap["crit"])
+
+	jwtHeader = CreateDetachedJWTHeader(&Proof{
+		Type: "EcdsaSecp256k1Signature2019",
+	})
+	require.NotEmpty(t, jwtHeader)
+
+	jwtHeaderMap = getJwtHeaderMap(jwtHeader)
+	require.Equal(t, "ES256K", jwtHeaderMap["alg"])
+	require.Equal(t, false, jwtHeaderMap["b64"])
+	require.Equal(t, []interface{}{"b64"}, jwtHeaderMap["crit"])
+
+	jwtHeader = CreateDetachedJWTHeader(&Proof{
+		Type: "JsonWebSignature2020",
+	})
+	require.NotEmpty(t, jwtHeader)
+
+	jwtHeaderMap = getJwtHeaderMap(jwtHeader)
+	// TODO this should be improved (https://github.com/hyperledger/aries-framework-go/issues/1589)
+	require.Equal(t, "JsonWebSignature2020", jwtHeaderMap["alg"])
+	require.Equal(t, false, jwtHeaderMap["b64"])
+	require.Equal(t, []interface{}{"b64"}, jwtHeaderMap["crit"])
 }
 
 func TestGetJWTSignature(t *testing.T) {

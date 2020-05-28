@@ -22,6 +22,8 @@ type (
 	// presentation process, or in response to a request-presentation message when the Prover wants to
 	// propose using a different presentation format.
 	ProposePresentation presentproof.ProposePresentation
+	// Action contains helpful information about action
+	Action presentproof.Action
 )
 
 var (
@@ -68,8 +70,18 @@ func New(ctx Provider) (*Client, error) {
 }
 
 // Actions returns pending actions that have yet to be executed or cancelled.
-func (c *Client) Actions() ([]presentproof.Action, error) {
-	return c.service.Actions()
+func (c *Client) Actions() ([]Action, error) {
+	actions, err := c.service.Actions()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]Action, len(actions))
+	for i, action := range actions {
+		result[i] = Action(action)
+	}
+
+	return result, nil
 }
 
 // SendRequestPresentation is used by the Verifier to send a request presentation.
@@ -124,8 +136,8 @@ func (c *Client) DeclineProposePresentation(piID, reason string) error {
 }
 
 // AcceptPresentation is used by the Verifier to accept a presentation.
-func (c *Client) AcceptPresentation(piID string) error {
-	return c.service.ActionContinue(piID, nil)
+func (c *Client) AcceptPresentation(piID string, names ...string) error {
+	return c.service.ActionContinue(piID, WithFriendlyNames(names...))
 }
 
 // DeclinePresentation is used by the Verifier to decline a presentation.
@@ -152,4 +164,9 @@ func WithProposePresentation(msg *ProposePresentation) presentproof.Opt {
 func WithRequestPresentation(msg *RequestPresentation) presentproof.Opt {
 	origin := presentproof.RequestPresentation(*msg)
 	return presentproof.WithRequestPresentation(&origin)
+}
+
+// WithFriendlyNames allows providing names for the presentations.
+func WithFriendlyNames(names ...string) presentproof.Opt {
+	return presentproof.WithFriendlyNames(names...)
 }

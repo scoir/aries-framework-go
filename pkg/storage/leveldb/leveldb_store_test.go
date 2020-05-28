@@ -220,14 +220,17 @@ func TestLevelDBStore(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		itr := store.Iterator("abc_", "abc_~")
+		itr := store.Iterator("abc_", "abc_"+storage.EndKeySuffix)
 		verifyItr(t, itr, 4, "abc_")
 
 		itr = store.Iterator("", "")
 		verifyItr(t, itr, 0, "")
 
-		itr = store.Iterator("abc_", "mno_~")
+		itr = store.Iterator("abc_", "mno_"+storage.EndKeySuffix)
 		verifyItr(t, itr, 6, "")
+
+		itr = store.Iterator("abc_", "mno_123")
+		verifyItr(t, itr, 5, "")
 	})
 }
 

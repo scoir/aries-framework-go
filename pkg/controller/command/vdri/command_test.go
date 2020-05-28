@@ -14,8 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/hyperledger/aries-framework-go/pkg/controller/command"
-	"github.com/hyperledger/aries-framework-go/pkg/internal/mock/didcomm/protocol"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	mockprovider "github.com/hyperledger/aries-framework-go/pkg/internal/mock/provider"
 	mockstore "github.com/hyperledger/aries-framework-go/pkg/mock/storage"
 	mockvdri "github.com/hyperledger/aries-framework-go/pkg/mock/vdri"
@@ -42,114 +41,6 @@ const doc = `{
     }
   ]
 }`
-
-func TestOperation_CreatePublicDID(t *testing.T) {
-	t.Run("Test successful create public DID with method", func(t *testing.T) {
-		cmd, err := New(&protocol.MockProvider{})
-		require.NoError(t, err)
-		require.NotNil(t, cmd)
-
-		handlers := cmd.GetHandlers()
-		require.NotEmpty(t, handlers)
-
-		var b bytes.Buffer
-		req := []byte(`{"method":"sidetree"}`)
-		cmdErr := cmd.CreatePublicDID(&b, bytes.NewBuffer(req))
-		require.NoError(t, cmdErr)
-
-		var response CreatePublicDIDResponse
-		err = json.NewDecoder(&b).Decode(&response)
-		require.NoError(t, err)
-
-		// verify response
-		require.NotEmpty(t, response)
-		require.NotEmpty(t, response.DID)
-		require.NotEmpty(t, response.DID.ID)
-		require.NotEmpty(t, response.DID.PublicKey)
-		require.NotEmpty(t, response.DID.Service)
-	})
-
-	t.Run("Test successful create public DID with request header", func(t *testing.T) {
-		cmd, err := New(&protocol.MockProvider{})
-		require.NoError(t, err)
-		require.NotNil(t, cmd)
-
-		var b bytes.Buffer
-		req := []byte(`{"method":"sidetree", "header":"{}"}`)
-		cmdErr := cmd.CreatePublicDID(&b, bytes.NewBuffer(req))
-		require.NoError(t, cmdErr)
-
-		var response CreatePublicDIDResponse
-		err = json.NewDecoder(&b).Decode(&response)
-		require.NoError(t, err)
-
-		// verify response
-		require.NotEmpty(t, response)
-		require.NotEmpty(t, response.DID)
-		require.NotEmpty(t, response.DID.ID)
-		require.NotEmpty(t, response.DID.PublicKey)
-		require.NotEmpty(t, response.DID.Service)
-	})
-
-	t.Run("Test create public DID validation error", func(t *testing.T) {
-		cmd, err := New(&mockprovider.Provider{
-			StorageProviderValue: mockstore.NewMockStoreProvider(),
-		})
-		require.NoError(t, err)
-		require.NoError(t, err)
-		require.NotNil(t, cmd)
-
-		var b bytes.Buffer
-		req := []byte(`"""`)
-		cmdErr := cmd.CreatePublicDID(&b, bytes.NewBuffer(req))
-
-		require.Error(t, cmdErr)
-		require.Equal(t, cmdErr.Type(), command.ValidationError)
-		require.Equal(t, cmdErr.Code(), InvalidRequestErrorCode)
-		require.Contains(t, cmdErr.Error(), "cannot unmarshal")
-
-		req = []byte(`{}`)
-		cmdErr = cmd.CreatePublicDID(&b, bytes.NewBuffer(req))
-
-		require.Error(t, cmdErr)
-		require.Equal(t, cmdErr.Type(), command.ValidationError)
-		require.Equal(t, cmdErr.Code(), InvalidRequestErrorCode)
-		require.Contains(t, cmdErr.Error(), errDIDMethodMandatory)
-	})
-
-	t.Run("Failed Create public DID, VDRI error", func(t *testing.T) {
-		const errMsg = "just fail it error"
-		cmd, err := New(&protocol.MockProvider{CustomVDRI: &mockvdri.MockVDRIRegistry{CreateErr: fmt.Errorf(errMsg)}})
-		require.NoError(t, err)
-		require.NotNil(t, cmd)
-
-		var b bytes.Buffer
-		req := []byte(`{"method":"sidetree"}`)
-		cmdErr := cmd.CreatePublicDID(&b, bytes.NewBuffer(req))
-		require.Error(t, cmdErr)
-		require.Equal(t, cmdErr.Type(), command.ExecuteError)
-		require.Equal(t, cmdErr.Code(), CreatePublicDIDError)
-		require.Contains(t, cmdErr.Error(), errMsg)
-	})
-}
-
-func TestBuildSideTreeRequest(t *testing.T) {
-	registry := mockvdri.MockVDRIRegistry{}
-	didDoc, err := registry.Create("sidetree")
-	require.NoError(t, err)
-	require.NotNil(t, didDoc)
-
-	b, err := didDoc.JSONBytes()
-	require.NoError(t, err)
-
-	r, err := getBasicRequestBuilder(`{"operation":"create"}`)(b)
-	require.NoError(t, err)
-	require.NotNil(t, r)
-
-	r, err = getBasicRequestBuilder(`--`)(b)
-	require.Error(t, err)
-	require.Nil(t, r)
-}
 
 func TestNew(t *testing.T) {
 	t.Run("test new command - success", func(t *testing.T) {
@@ -273,6 +164,77 @@ func TestSaveDID(t *testing.T) {
 		err = cmd.SaveDID(&b, bytes.NewBuffer(didReqBytes))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "save did doc")
+	})
+}
+
+func TestResolveDID(t *testing.T) {
+	t.Run("test resolve did - success", func(t *testing.T) {
+		didDoc, err := did.ParseDocument([]byte(doc))
+		require.NoError(t, err)
+
+		cmd, err := New(&mockprovider.Provider{
+			StorageProviderValue: mockstore.NewMockStoreProvider(),
+			VDRIRegistryValue:    &mockvdri.MockVDRIRegistry{ResolveValue: didDoc},
+		})
+		require.NotNil(t, cmd)
+		require.NoError(t, err)
+
+		jsoStr := fmt.Sprintf(`{"id":"%s"}`, "did:peer:21tDAKCERh95uGgKbJNHYp")
+
+		var getRW bytes.Buffer
+		cmdErr := cmd.ResolveDID(&getRW, bytes.NewBufferString(jsoStr))
+		require.NoError(t, cmdErr)
+
+		response := Document{}
+		err = json.NewDecoder(&getRW).Decode(&response)
+		require.NoError(t, err)
+
+		// verify response
+		require.NotEmpty(t, response)
+		require.NotEmpty(t, response.DID)
+	})
+
+	t.Run("test get did - invalid request", func(t *testing.T) {
+		cmd, err := New(&mockprovider.Provider{
+			StorageProviderValue: mockstore.NewMockStoreProvider(),
+		})
+		require.NotNil(t, cmd)
+		require.NoError(t, err)
+
+		var b bytes.Buffer
+		err = cmd.ResolveDID(&b, bytes.NewBufferString("--"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "request decode")
+	})
+
+	t.Run("test get did - no did in the request", func(t *testing.T) {
+		cmd, err := New(&mockprovider.Provider{
+			StorageProviderValue: mockstore.NewMockStoreProvider(),
+		})
+		require.NotNil(t, cmd)
+		require.NoError(t, err)
+
+		jsoStr := fmt.Sprintf(`{}`)
+
+		var b bytes.Buffer
+		err = cmd.ResolveDID(&b, bytes.NewBufferString(jsoStr))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "did is mandatory")
+	})
+
+	t.Run("test get did - resolve error", func(t *testing.T) {
+		cmd, err := New(&mockprovider.Provider{StorageProviderValue: mockstore.NewMockStoreProvider(),
+			VDRIRegistryValue: &mockvdri.MockVDRIRegistry{ResolveErr: fmt.Errorf("failed to resolve")},
+		})
+		require.NotNil(t, cmd)
+		require.NoError(t, err)
+
+		jsoStr := fmt.Sprintf(`{"id":"%s"}`, "did:peer:21tDAKCERh95uGgKbJNHYp")
+
+		var b bytes.Buffer
+		err = cmd.ResolveDID(&b, bytes.NewBufferString(jsoStr))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to resolve")
 	})
 }
 

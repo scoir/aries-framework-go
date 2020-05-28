@@ -8,7 +8,8 @@ package proof
 import (
 	"encoding/base64"
 	"errors"
-	"time"
+
+	"github.com/hyperledger/aries-framework-go/pkg/doc/util"
 )
 
 const (
@@ -30,12 +31,14 @@ const (
 	jsonldJWS = "jws"
 	// jsonldVerificationMethod is a key for verification method
 	jsonldVerificationMethod = "verificationMethod"
+	// jsonldChallenge is a key for challenge
+	jsonldChallenge = "challenge"
 )
 
 // Proof is cryptographic proof of the integrity of the DID Document
 type Proof struct {
 	Type                    string
-	Created                 *time.Time
+	Created                 *util.TimeWithTrailingZeroMsec
 	Creator                 string
 	VerificationMethod      string
 	ProofValue              []byte
@@ -43,6 +46,7 @@ type Proof struct {
 	ProofPurpose            string
 	Domain                  string
 	Nonce                   []byte
+	Challenge               string
 	SignatureRepresentation SignatureRepresentation
 }
 
@@ -50,7 +54,7 @@ type Proof struct {
 func NewProof(emap map[string]interface{}) (*Proof, error) {
 	created := stringEntry(emap[jsonldCreated])
 
-	timeValue, err := time.Parse(time.RFC3339, created)
+	timeValue, err := util.ParseTimeWithTrailingZeroMsec(created)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +88,7 @@ func NewProof(emap map[string]interface{}) (*Proof, error) {
 
 	return &Proof{
 		Type:                    stringEntry(emap[jsonldType]),
-		Created:                 &timeValue,
+		Created:                 timeValue,
 		Creator:                 stringEntry(emap[jsonldCreator]),
 		VerificationMethod:      stringEntry(emap[jsonldVerificationMethod]),
 		ProofValue:              proofValue,
@@ -93,6 +97,7 @@ func NewProof(emap map[string]interface{}) (*Proof, error) {
 		ProofPurpose:            stringEntry(emap[jsonldProofPurpose]),
 		Domain:                  stringEntry(emap[jsonldDomain]),
 		Nonce:                   nonce,
+		Challenge:               stringEntry(emap[jsonldChallenge]),
 	}, nil
 }
 
@@ -119,7 +124,7 @@ func (p *Proof) JSONLdObject() map[string]interface{} {
 	}
 
 	if p.Created != nil {
-		emap[jsonldCreated] = p.Created.Format(time.RFC3339)
+		emap[jsonldCreated] = p.Created.Format(p.Created.GetFormat())
 	}
 
 	if len(p.ProofValue) > 0 {
@@ -140,6 +145,10 @@ func (p *Proof) JSONLdObject() map[string]interface{} {
 
 	if p.ProofPurpose != "" {
 		emap[jsonldProofPurpose] = p.ProofPurpose
+	}
+
+	if p.Challenge != "" {
+		emap[jsonldChallenge] = p.Challenge
 	}
 
 	return emap

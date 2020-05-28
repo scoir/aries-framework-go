@@ -52,6 +52,12 @@ const (
 
 	// KMS error group for key management service errors
 	KMS Group = 7000
+
+	// IssueCredential error group for issue credential command errors
+	IssueCredential = 8000
+
+	// PresentProof error group for present proof command errors
+	PresentProof = 9000
 )
 
 // Error is the  interface for representing an command error condition, with the nil value representing no error.

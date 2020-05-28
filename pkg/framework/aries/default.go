@@ -20,15 +20,19 @@ import (
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/introduce"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/issuecredential"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/mediator"
+	middleware "github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/middleware/issuecredential"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/outofband"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/presentproof"
-	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
 	arieshttp "github.com/hyperledger/aries-framework-go/pkg/didcomm/transport/http"
 	"github.com/hyperledger/aries-framework-go/pkg/framework/aries/api"
+	"github.com/hyperledger/aries-framework-go/pkg/framework/context"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/localkms"
 	"github.com/hyperledger/aries-framework-go/pkg/secretlock/noop"
+	"github.com/hyperledger/aries-framework-go/pkg/storage"
+	"github.com/hyperledger/aries-framework-go/pkg/store/verifiable"
 )
 
 // defFrameworkOpts provides default framework options
@@ -52,10 +56,18 @@ func defFrameworkOpts(frameworkOpts *Aries) error {
 		frameworkOpts.storeProvider = storeProv
 	}
 
-	// order is important as DIDExchange service depends on Route service and Introduce depends on DIDExchange
+	err := assignVerifiableStoreIfNeeded(frameworkOpts, frameworkOpts.storeProvider)
+	if err != nil {
+		return err
+	}
+
+	// order is important:
+	// - DIDExchange depends on Route
+	// - OutOfBand depends on DIDExchange
+	// - Introduce depends on OutOfBand
 	frameworkOpts.protocolSvcCreators = append(frameworkOpts.protocolSvcCreators,
-		newRouteSvc(), newExchangeSvc(), newIntroduceSvc(),
-		newIssueCredentialSvc(), newOutOfBandSvc(), newPresentProofSvc(),
+		newRouteSvc(), newExchangeSvc(), newOutOfBandSvc(), newIntroduceSvc(),
+		newIssueCredentialSvc(), newPresentProofSvc(),
 	)
 
 	if frameworkOpts.secretLock == nil && frameworkOpts.kmsCreator == nil {
@@ -88,7 +100,15 @@ func newIntroduceSvc() api.ProtocolSvcCreator {
 
 func newIssueCredentialSvc() api.ProtocolSvcCreator {
 	return func(prv api.Provider) (dispatcher.ProtocolService, error) {
-		return issuecredential.New(prv)
+		service, err := issuecredential.New(prv)
+		if err != nil {
+			return nil, err
+		}
+
+		// sets default middleware to the service
+		service.Use(middleware.SaveCredentials(prv))
+
+		return service, err
 	}
 }
 
@@ -100,7 +120,7 @@ func newPresentProofSvc() api.ProtocolSvcCreator {
 
 func newRouteSvc() api.ProtocolSvcCreator {
 	return func(prv api.Provider) (dispatcher.ProtocolService, error) {
-		return route.New(prv)
+		return mediator.New(prv)
 	}
 }
 
@@ -128,15 +148,15 @@ func setAdditionalDefaultOpts(frameworkOpts *Aries) error {
 	}
 
 	if frameworkOpts.packerCreator == nil {
-		frameworkOpts.packerCreator = func(provider packer.Provider) (packer.Packer, error) {
+		frameworkOpts.packerCreator = func(provider packer.LegacyProvider) (packer.Packer, error) {
 			return legacy.New(provider), nil
 		}
 
-		frameworkOpts.packerCreators = []packer.Creator{
-			func(provider packer.Provider) (packer.Packer, error) {
+		frameworkOpts.packerCreators = []packer.LegacyCreator{
+			func(provider packer.LegacyProvider) (packer.Packer, error) {
 				return legacy.New(provider), nil
 			},
-			func(provider packer.Provider) (packer.Packer, error) {
+			func(provider packer.LegacyProvider) (packer.Packer, error) {
 				return jwe.New(provider, jwe.XC20P)
 			},
 		}
@@ -159,6 +179,24 @@ func setAdditionalDefaultOpts(frameworkOpts *Aries) error {
 
 	if frameworkOpts.msgSvcProvider == nil {
 		frameworkOpts.msgSvcProvider = &noOpMessageServiceProvider{}
+	}
+
+	return nil
+}
+
+func assignVerifiableStoreIfNeeded(aries *Aries, storeProvider storage.Provider) error {
+	if aries.verifiableStore != nil {
+		return nil
+	}
+
+	provider, err := context.New(context.WithStorageProvider(storeProvider))
+	if err != nil {
+		return fmt.Errorf("verifiable store initialization failed : %w", err)
+	}
+
+	aries.verifiableStore, err = verifiable.New(provider)
+	if err != nil {
+		return fmt.Errorf("can't initialize verifaible store : %w", err)
 	}
 
 	return nil
