@@ -32,9 +32,10 @@ const (
 
 // VDRI via HTTP(s) endpoint
 type VDRI struct {
-	endpointURL string
-	client      *http.Client
-	accept      Accept
+	endpointURL      string
+	client           *http.Client
+	accept           Accept
+	resolveAuthToken string
 }
 
 // Accept is method to accept did method
@@ -105,7 +106,7 @@ func (v *VDRI) Build(pubKey *vdriapi.PubKey, opts ...vdriapi.DocOpts) (*did.Doc,
 		}
 
 		if docOpts.ServiceType == vdriapi.DIDCommServiceType {
-			s.RecipientKeys = []string{publicKey.ID}
+			s.RecipientKeys = []string{pubKey.Value}
 			s.Priority = 0
 		}
 
@@ -196,6 +197,13 @@ func WithTLSConfig(tlsConfig *tls.Config) Option {
 func WithAccept(accept Accept) Option {
 	return func(opts *VDRI) {
 		opts.accept = accept
+	}
+}
+
+// WithResolveAuthToken add auth token for resolve
+func WithResolveAuthToken(authToken string) Option {
+	return func(opts *VDRI) {
+		opts.resolveAuthToken = "Bearer " + authToken
 	}
 }
 

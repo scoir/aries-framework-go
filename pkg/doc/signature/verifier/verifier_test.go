@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/proof"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 )
@@ -25,8 +26,12 @@ func TestVerify(t *testing.T) {
 			Value: []byte("signature"),
 		},
 	}
-	v := New(okKeyResolver, &testSignatureSuite{accept: true})
-	err := v.Verify([]byte(validDoc))
+
+	v, err := New(okKeyResolver, &testSignatureSuite{accept: true})
+	require.NoError(t, err)
+	require.NotNil(t, v)
+
+	err = v.Verify([]byte(validDoc))
 	require.NoError(t, err)
 
 	// invalid json passed
@@ -56,36 +61,50 @@ func TestVerify(t *testing.T) {
 	require.EqualError(t, err, "no public key ID")
 
 	// public key is not resolved
-	v = New(&testKeyResolver{
+	v, err = New(&testKeyResolver{
 		err: errors.New("public key is not resolved"),
 	}, &testSignatureSuite{accept: true})
+	require.NoError(t, err)
+
 	err = v.Verify([]byte(validDoc))
 	require.Error(t, err)
 	require.EqualError(t, err, "public key is not resolved")
 
 	// signature suite is not found
-	v = New(okKeyResolver, &testSignatureSuite{accept: false})
+	v, err = New(okKeyResolver, &testSignatureSuite{accept: false})
+	require.NoError(t, err)
+
 	err = v.Verify([]byte(validDoc))
 	require.Error(t, err)
 	require.EqualError(t, err, "signature type Ed25519Signature2018 not supported")
 
 	// verify data creation error
-	v = New(okKeyResolver, &testSignatureSuite{
+	v, err = New(okKeyResolver, &testSignatureSuite{
 		canonicalDocumentError: errors.New("get canonical document error"),
 		accept:                 true,
 	})
+	require.NoError(t, err)
+
 	err = v.Verify([]byte(validDoc))
 	require.Error(t, err)
 	require.EqualError(t, err, "get canonical document error")
 
 	// verification error
-	v = New(okKeyResolver, &testSignatureSuite{
+	v, err = New(okKeyResolver, &testSignatureSuite{
 		verifyError: errors.New("verify data error"),
 		accept:      true,
 	})
+	require.NoError(t, err)
+
 	err = v.Verify([]byte(validDoc))
 	require.Error(t, err)
 	require.EqualError(t, err, "verify data error")
+
+	// no signature suite passed
+	v, err = New(okKeyResolver)
+	require.Error(t, err)
+	require.EqualError(t, err, "at least one suite must be provided")
+	require.Nil(t, v)
 }
 
 func Test_getProofVerifyValue(t *testing.T) {
@@ -162,7 +181,7 @@ type testSignatureSuite struct {
 	compactProof bool
 }
 
-func (s *testSignatureSuite) GetCanonicalDocument(map[string]interface{}) ([]byte, error) {
+func (s *testSignatureSuite) GetCanonicalDocument(map[string]interface{}, ...jsonld.ProcessorOpts) ([]byte, error) {
 	return s.canonicalDocument, s.canonicalDocumentError
 }
 

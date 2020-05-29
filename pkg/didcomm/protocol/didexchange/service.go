@@ -30,16 +30,16 @@ var logger = log.New("aries-framework/did-exchange/service")
 const (
 	// DIDExchange did exchange protocol
 	DIDExchange = "didexchange"
-	// DIDExchangeSpec defines the did-exchange spec
-	DIDExchangeSpec = "https://didcomm.org/didexchange/1.0/"
+	// PIURI is the did-exchange protocol identifier URI
+	PIURI = "https://didcomm.org/didexchange/1.0"
 	// InvitationMsgType defines the did-exchange invite message type.
-	InvitationMsgType = DIDExchangeSpec + "invitation"
+	InvitationMsgType = PIURI + "/invitation"
 	// RequestMsgType defines the did-exchange request message type.
-	RequestMsgType = DIDExchangeSpec + "request"
+	RequestMsgType = PIURI + "/request"
 	// ResponseMsgType defines the did-exchange response message type.
-	ResponseMsgType = DIDExchangeSpec + "response"
+	ResponseMsgType = PIURI + "/response"
 	// AckMsgType defines the did-exchange ack message type.
-	AckMsgType = DIDExchangeSpec + "ack"
+	AckMsgType = PIURI + "/ack"
 
 	oobMsgType = "oob-invitation"
 )
@@ -414,12 +414,12 @@ func (s *Service) startInternalListener() {
 
 // AcceptInvitation accepts/approves connection invitation.
 func (s *Service) AcceptInvitation(connectionID, publicDID, label string) error {
-	return s.accept(connectionID, publicDID, label, stateNameInvited, "accept exchange invitation")
+	return s.accept(connectionID, publicDID, label, StateIDInvited, "accept exchange invitation")
 }
 
 // AcceptExchangeRequest accepts/approves connection request.
 func (s *Service) AcceptExchangeRequest(connectionID, publicDID, label string) error {
-	return s.accept(connectionID, publicDID, label, stateNameRequested, "accept exchange request")
+	return s.accept(connectionID, publicDID, label, StateIDRequested, "accept exchange request")
 }
 
 // RespondTo this inbound invitation and return with the new connection record's ID.
@@ -512,7 +512,7 @@ func (s *Service) abandon(thID string, msg service.DIDCommMsg, processErr error)
 		ProtocolName: DIDExchange,
 		Type:         service.PostState,
 		Msg:          msg,
-		StateID:      stateNameAbandoned,
+		StateID:      StateIDAbandoned,
 		Properties:   createErrorEventProperties(connRec.ConnectionID, "", processErr),
 	})
 
@@ -552,9 +552,9 @@ func (s *Service) currentState(nsThID string) (state, error) {
 }
 
 func (s *Service) update(msgType string, connectionRecord *connection.Record) error {
-	if (msgType == RequestMsgType && connectionRecord.State == stateNameRequested) ||
-		(msgType == InvitationMsgType && connectionRecord.State == stateNameInvited) ||
-		(msgType == oobMsgType && connectionRecord.State == stateNameInvited) {
+	if (msgType == RequestMsgType && connectionRecord.State == StateIDRequested) ||
+		(msgType == InvitationMsgType && connectionRecord.State == StateIDInvited) ||
+		(msgType == oobMsgType && connectionRecord.State == StateIDInvited) {
 		return s.connectionStore.saveConnectionRecordWithMapping(connectionRecord)
 	}
 
@@ -715,7 +715,7 @@ func generateRandomID() string {
 // 1. Role is invitee and state is invited
 // 2. Role is inviter and state is requested
 func canTriggerActionEvents(stateID, ns string) bool {
-	return (stateID == stateNameInvited && ns == myNSPrefix) || (stateID == stateNameRequested && ns == theirNSPrefix)
+	return (stateID == StateIDInvited && ns == myNSPrefix) || (stateID == StateIDRequested && ns == theirNSPrefix)
 }
 
 type options struct {

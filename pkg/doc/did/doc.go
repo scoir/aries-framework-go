@@ -44,6 +44,7 @@ const (
 	jsonldSignatureValue = "signatureValue"
 	jsonldDomain         = "domain"
 	jsonldNonce          = "nonce"
+	jsonldProofPurpose   = "proofPurpose"
 
 	// various public key encodings
 	jsonldPublicKeyBase58 = "publicKeyBase58"
@@ -97,17 +98,23 @@ func Parse(did string) (*DID, error) {
 
 // Doc DID Document definition
 type Doc struct {
-	Context        []string
-	ID             string
-	PublicKey      []PublicKey
-	Service        []Service
-	Authentication []VerificationMethod
-	Created        *time.Time
-	Updated        *time.Time
-	Proof          []Proof
+	Context              []string
+	ID                   string
+	PublicKey            []PublicKey
+	Service              []Service
+	Authentication       []VerificationMethod
+	AssertionMethod      []VerificationMethod
+	CapabilityDelegation []VerificationMethod
+	CapabilityInvocation []VerificationMethod
+	KeyAgreement         []VerificationMethod
+	Created              *time.Time
+	Updated              *time.Time
+	Proof                []Proof
 }
 
-// PublicKey DID doc public key
+// PublicKey DID doc public key.
+// The value of the public key is defined either as raw public key bytes (Value field) or as JSON Web Key.
+// In the first case the Type field can hold additional information to understand the nature of the raw public key.
 type PublicKey struct {
 	ID         string
 	Type       string
@@ -116,6 +123,37 @@ type PublicKey struct {
 	Value []byte
 
 	jsonWebKey *jose.JWK
+}
+
+// NewPublicKeyFromBytes creates a new PublicKey based on raw public key bytes.
+func NewPublicKeyFromBytes(id, kType, controller string, value []byte) *PublicKey {
+	return &PublicKey{
+		ID:         id,
+		Type:       kType,
+		Controller: controller,
+		Value:      value,
+	}
+}
+
+// NewPublicKeyFromJWK creates a new PublicKey based on JSON Web Key.
+func NewPublicKeyFromJWK(id, kType, controller string, jwk *jose.JWK) (*PublicKey, error) {
+	pkBytes, err := jwk.PublicKeyBytes()
+	if err != nil {
+		return nil, fmt.Errorf("convert JWK to public key bytes: %w", err)
+	}
+
+	return &PublicKey{
+		ID:         id,
+		Type:       kType,
+		Controller: controller,
+		Value:      pkBytes,
+		jsonWebKey: jwk,
+	}, nil
+}
+
+// JSONWebKey returns JSON Web key if defined
+func (pk *PublicKey) JSONWebKey() *jose.JWK {
+	return pk.jsonWebKey
 }
 
 // Service DID doc service
@@ -129,30 +167,62 @@ type Service struct {
 	Properties      map[string]interface{}
 }
 
+// VerificationRelationship defines a verification relationship between DID subject and a verification method.
+type VerificationRelationship int
+
+const (
+	// VerificationRelationshipGeneral is a special case of verification relationship: when a public key
+	// defined in PublicKey is not used by any VerificationMethod.
+	VerificationRelationshipGeneral VerificationRelationship = iota
+
+	// Authentication defines verification relationship.
+	Authentication
+
+	// AssertionMethod defines verification relationship.
+	AssertionMethod
+
+	// CapabilityDelegation defines verification relationship.
+	CapabilityDelegation
+
+	// CapabilityInvocation defines verification relationship.
+	CapabilityInvocation
+
+	// KeyAgreement defines verification relationship.
+	KeyAgreement
+)
+
 // VerificationMethod authentication verification method
 type VerificationMethod struct {
-	PublicKey PublicKey
+	PublicKey    PublicKey
+	Relationship VerificationRelationship
+	Embedded     bool
+	RelativeURL  bool
 }
 
 type rawDoc struct {
-	Context        interface{}              `json:"@context,omitempty"`
-	ID             string                   `json:"id,omitempty"`
-	PublicKey      []map[string]interface{} `json:"publicKey,omitempty"`
-	Service        []map[string]interface{} `json:"service,omitempty"`
-	Authentication []interface{}            `json:"authentication,omitempty"`
-	Created        *time.Time               `json:"created,omitempty"`
-	Updated        *time.Time               `json:"updated,omitempty"`
-	Proof          []interface{}            `json:"proof,omitempty"`
+	Context              interface{}              `json:"@context,omitempty"`
+	ID                   string                   `json:"id,omitempty"`
+	PublicKey            []map[string]interface{} `json:"publicKey,omitempty"`
+	Service              []map[string]interface{} `json:"service,omitempty"`
+	Authentication       []interface{}            `json:"authentication,omitempty"`
+	AssertionMethod      []interface{}            `json:"assertionMethod,omitempty"`
+	CapabilityDelegation []interface{}            `json:"capabilityDelegation,omitempty"`
+	CapabilityInvocation []interface{}            `json:"capabilityInvocation,omitempty"`
+	KeyAgreement         []interface{}            `json:"keyAgreement,omitempty"`
+	Created              *time.Time               `json:"created,omitempty"`
+	Updated              *time.Time               `json:"updated,omitempty"`
+	Proof                []interface{}            `json:"proof,omitempty"`
 }
 
 // Proof is cryptographic proof of the integrity of the DID Document
 type Proof struct {
-	Type       string
-	Created    *time.Time
-	Creator    string
-	ProofValue []byte
-	Domain     string
-	Nonce      []byte
+	Type         string
+	Created      *time.Time
+	Creator      string
+	ProofValue   []byte
+	Domain       string
+	Nonce        []byte
+	ProofPurpose string
 }
 
 // ParseDocument creates an instance of DIDDocument by reading a JSON document from bytes
@@ -171,16 +241,26 @@ func ParseDocument(data []byte) (*Doc, error) {
 		return nil, err
 	}
 
+	doc := &Doc{
+		ID:      raw.ID,
+		Created: raw.Created,
+		Updated: raw.Updated,
+	}
+
 	context := raw.ParseContext()
+	doc.Context = context
+	doc.Service = populateServices(raw.Service)
 
 	publicKeys, err := populatePublicKeys(context[0], raw.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("populate public keys failed: %w", err)
 	}
 
-	authPKs, err := populateAuthentications(context[0], raw.Authentication, publicKeys)
+	doc.PublicKey = publicKeys
+
+	err = populateVerificationRelationships(doc, raw)
 	if err != nil {
-		return nil, fmt.Errorf("populate authentications failed: %w", err)
+		return nil, err
 	}
 
 	proofs, err := populateProofs(context[0], raw.Proof)
@@ -188,15 +268,48 @@ func ParseDocument(data []byte) (*Doc, error) {
 		return nil, fmt.Errorf("populate proofs failed: %w", err)
 	}
 
-	return &Doc{Context: context,
-		ID:             raw.ID,
-		PublicKey:      publicKeys,
-		Service:        populateServices(raw.Service),
-		Authentication: authPKs,
-		Created:        raw.Created,
-		Updated:        raw.Updated,
-		Proof:          proofs,
-	}, nil
+	doc.Proof = proofs
+
+	return doc, nil
+}
+
+func populateVerificationRelationships(doc *Doc, raw *rawDoc) error {
+	authentications, err := populateVerificationMethods(doc, raw.Authentication, Authentication)
+	if err != nil {
+		return fmt.Errorf("populate authentications failed: %w", err)
+	}
+
+	doc.Authentication = authentications
+
+	assertionMethods, err := populateVerificationMethods(doc, raw.AssertionMethod, AssertionMethod)
+	if err != nil {
+		return fmt.Errorf("populate assertion methods failed: %w", err)
+	}
+
+	doc.AssertionMethod = assertionMethods
+
+	capabilityDelegations, err := populateVerificationMethods(doc, raw.CapabilityDelegation, CapabilityDelegation)
+	if err != nil {
+		return fmt.Errorf("populate capability delegations failed: %w", err)
+	}
+
+	doc.CapabilityDelegation = capabilityDelegations
+
+	capabilityInvocations, err := populateVerificationMethods(doc, raw.CapabilityInvocation, CapabilityInvocation)
+	if err != nil {
+		return fmt.Errorf("populate capability invocations failed: %w", err)
+	}
+
+	doc.CapabilityInvocation = capabilityInvocations
+
+	keyAgreements, err := populateVerificationMethods(doc, raw.KeyAgreement, KeyAgreement)
+	if err != nil {
+		return fmt.Errorf("populate capability invocations failed: %w", err)
+	}
+
+	doc.KeyAgreement = keyAgreements
+
+	return nil
 }
 
 func populateProofs(context string, rawProofs []interface{}) ([]Proof, error) {
@@ -232,12 +345,13 @@ func populateProofs(context string, rawProofs []interface{}) ([]Proof, error) {
 		}
 
 		proof := Proof{
-			Type:       stringEntry(emap[jsonldType]),
-			Created:    &timeValue,
-			Creator:    stringEntry(emap[jsonldCreator]),
-			ProofValue: proofValue,
-			Domain:     stringEntry(emap[jsonldDomain]),
-			Nonce:      nonce,
+			Type:         stringEntry(emap[jsonldType]),
+			Created:      &timeValue,
+			Creator:      stringEntry(emap[jsonldCreator]),
+			ProofValue:   proofValue,
+			ProofPurpose: stringEntry(emap[jsonldProofPurpose]),
+			Domain:       stringEntry(emap[jsonldDomain]),
+			Nonce:        nonce,
 		}
 
 		proofs = append(proofs, proof)
@@ -271,12 +385,12 @@ func populateServices(rawServices []map[string]interface{}) []Service {
 	return services
 }
 
-func populateAuthentications(context string, rawAuthentications []interface{},
-	pks []PublicKey) ([]VerificationMethod, error) {
+func populateVerificationMethods(doc *Doc, rawVerificationMethods []interface{},
+	relationship VerificationRelationship) ([]VerificationMethod, error) {
 	var vms []VerificationMethod
 
-	for _, rawAuthentication := range rawAuthentications {
-		v, err := getVerificationMethods(context, rawAuthentication, pks)
+	for _, rawVerificationMethod := range rawVerificationMethods {
+		v, err := getVerificationMethods(doc, rawVerificationMethod, relationship)
 		if err != nil {
 			return nil, err
 		}
@@ -287,30 +401,34 @@ func populateAuthentications(context string, rawAuthentications []interface{},
 	return vms, nil
 }
 
-// getVerificationMethods get verification methods by authentication
-func getVerificationMethods(context string,
-	rawAuthentication interface{}, pks []PublicKey) ([]VerificationMethod, error) {
-	keyID, keyIDExist := rawAuthentication.(string)
+// getVerificationMethods gets verification methods from raw data
+func getVerificationMethods(doc *Doc, rawVerificationMethod interface{},
+	relationship VerificationRelationship) ([]VerificationMethod, error) {
+	// context, docID string
+	pks := doc.PublicKey
+	context := doc.Context[0]
+
+	keyID, keyIDExist := rawVerificationMethod.(string)
 	if keyIDExist {
-		return getVerifcationMethodsByKeyID(pks, keyID)
+		return getVerificationMethodsByKeyID(doc.ID, pks, relationship, keyID)
 	}
 
-	m, ok := rawAuthentication.(map[string]interface{})
+	m, ok := rawVerificationMethod.(map[string]interface{})
 	if !ok {
-		return nil, errors.New("rawAuthentication is not map[string]interface{}")
+		return nil, errors.New("rawVerificationMethod is not map[string]interface{}")
 	}
 
 	if context == contextV011 {
 		keyID, keyIDExist = m[jsonldPublicKey].(string)
 		if keyIDExist {
-			return getVerifcationMethodsByKeyID(pks, keyID)
+			return getVerificationMethodsByKeyID(doc.ID, pks, relationship, keyID)
 		}
 	}
 
 	if context == contextV12019 {
 		keyIDs, keyIDsExist := m[jsonldPublicKey].([]interface{})
 		if keyIDsExist {
-			return getVerifcationMethodsByKeyID(pks, keyIDs...)
+			return getVerificationMethodsByKeyID(doc.ID, pks, relationship, keyIDs...)
 		}
 	}
 
@@ -319,11 +437,12 @@ func getVerificationMethods(context string,
 		return nil, err
 	}
 
-	return []VerificationMethod{{pk[0]}}, nil
+	return []VerificationMethod{{PublicKey: pk[0], Relationship: relationship, Embedded: true}}, nil
 }
 
-// getVerifcationMethodsByKeyID get verification methods by key IDs
-func getVerifcationMethodsByKeyID(pks []PublicKey, keyIDs ...interface{}) ([]VerificationMethod, error) {
+// getVerificationMethodsByKeyID get verification methods by key IDs
+func getVerificationMethodsByKeyID(didID string, pks []PublicKey, relationship VerificationRelationship,
+	keyIDs ...interface{}) ([]VerificationMethod, error) {
 	var vms []VerificationMethod
 
 	for _, keyID := range keyIDs {
@@ -335,7 +454,12 @@ func getVerifcationMethodsByKeyID(pks []PublicKey, keyIDs ...interface{}) ([]Ver
 
 		for _, pk := range pks {
 			if pk.ID == keyID {
-				vms = append(vms, VerificationMethod{pk})
+				vms = append(vms, VerificationMethod{PublicKey: pk, Relationship: relationship})
+				keyExist = true
+
+				break
+			} else if pk.ID == resolveRelativeDIDURL(didID, keyID) {
+				vms = append(vms, VerificationMethod{PublicKey: pk, Relationship: relationship, RelativeURL: true})
 				keyExist = true
 
 				break
@@ -343,11 +467,19 @@ func getVerifcationMethodsByKeyID(pks []PublicKey, keyIDs ...interface{}) ([]Ver
 		}
 
 		if !keyExist {
-			return nil, fmt.Errorf("authentication key %s not exist in did doc public key", keyID)
+			return nil, fmt.Errorf("key %s not exist in did doc public key", keyID)
 		}
 	}
 
 	return vms, nil
+}
+
+func resolveRelativeDIDURL(didID string, keyID interface{}) string {
+	return didID + keyID.(string)
+}
+
+func makeRelativeDIDURL(didURL, didID string) string {
+	return strings.Replace(didURL, didID, "", 1)
 }
 
 func populatePublicKeys(context string, rawPKs []map[string]interface{}) ([]PublicKey, error) {
@@ -555,15 +687,49 @@ func (doc *Doc) JSONBytes() ([]byte, error) {
 		context = doc.Context[0]
 	}
 
+	publicKeys, err := populateRawPublicKeys(context, doc.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of Public Key failed: %w", err)
+	}
+
+	auths, err := populateRawVerificationMethods(context, doc.ID, doc.Authentication)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of Authentication failed: %w", err)
+	}
+
+	assertionMethods, err := populateRawVerificationMethods(context, doc.ID, doc.AssertionMethod)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of AssertionMethod failed: %w", err)
+	}
+
+	capabilityDelegations, err := populateRawVerificationMethods(context, doc.ID, doc.CapabilityDelegation)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of CapabilityDelegation failed: %w", err)
+	}
+
+	capabilityInvocations, err := populateRawVerificationMethods(context, doc.ID, doc.CapabilityInvocation)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of CapabilityInvocation failed: %w", err)
+	}
+
+	keyAgreements, err := populateRawVerificationMethods(context, doc.ID, doc.KeyAgreement)
+	if err != nil {
+		return nil, fmt.Errorf("JSON unmarshalling of KeyAgreement failed: %w", err)
+	}
+
 	raw := &rawDoc{
-		Context:        doc.Context,
-		ID:             doc.ID,
-		PublicKey:      populateRawPublicKeys(context, doc.PublicKey),
-		Authentication: populateRawAuthentications(context, doc.Authentication),
-		Service:        populateRawServices(doc.Service),
-		Created:        doc.Created,
-		Proof:          populateRawProofs(context, doc.Proof),
-		Updated:        doc.Updated,
+		Context:              doc.Context,
+		ID:                   doc.ID,
+		PublicKey:            publicKeys,
+		Authentication:       auths,
+		AssertionMethod:      assertionMethods,
+		CapabilityDelegation: capabilityDelegations,
+		CapabilityInvocation: capabilityInvocations,
+		KeyAgreement:         keyAgreements,
+		Service:              populateRawServices(doc.Service),
+		Created:              doc.Created,
+		Proof:                populateRawProofs(context, doc.Proof),
+		Updated:              doc.Updated,
 	}
 
 	byteDoc, err := json.Marshal(raw)
@@ -574,27 +740,8 @@ func (doc *Doc) JSONBytes() ([]byte, error) {
 	return byteDoc, nil
 }
 
-// signatureSuite encapsulates signature suite methods required for signature verification
-type signatureSuite interface {
-
-	// GetCanonicalDocument will return normalized/canonical version of the document
-	GetCanonicalDocument(doc map[string]interface{}) ([]byte, error)
-
-	// GetDigest returns document digest
-	GetDigest(doc []byte) []byte
-
-	// Verify will verify signature against public key
-	Verify(pubKey *verifier.PublicKey, doc []byte, signature []byte) error
-
-	// Accept registers this signature suite with the given signature type
-	Accept(signatureType string) bool
-
-	// CompactProof indicates weather to compact the proof doc before canonization
-	CompactProof() bool
-}
-
 // VerifyProof verifies document proofs
-func (doc *Doc) VerifyProof(suite signatureSuite) error {
+func (doc *Doc) VerifyProof(suites ...verifier.SignatureSuite) error {
 	if len(doc.Proof) == 0 {
 		return ErrProofNotFound
 	}
@@ -604,9 +751,73 @@ func (doc *Doc) VerifyProof(suite signatureSuite) error {
 		return err
 	}
 
-	v := verifier.New(&didKeyResolver{doc.PublicKey}, suite)
+	v, err := verifier.New(&didKeyResolver{doc.PublicKey}, suites...)
+	if err != nil {
+		return fmt.Errorf("create verifier: %w", err)
+	}
 
 	return v.Verify(docBytes)
+}
+
+// VerificationMethods returns verification methods of DID Doc of certain relationship.
+// If customVerificationRelationships is empty, all verification methods are returned.
+// Public keys which are not referred by any verification method are put into special VerificationRelationshipGeneral
+// relationship category.
+// nolint:gocyclo
+func (doc *Doc) VerificationMethods(customVerificationRelationships ...VerificationRelationship) map[VerificationRelationship][]VerificationMethod { //nolint:lll
+	all := len(customVerificationRelationships) == 0
+
+	includeRelationship := func(relationship VerificationRelationship) bool {
+		if all {
+			return true
+		}
+
+		for _, r := range customVerificationRelationships {
+			if r == relationship {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	verificationMethods := make(map[VerificationRelationship][]VerificationMethod)
+
+	if len(doc.Authentication) > 0 && includeRelationship(Authentication) {
+		verificationMethods[Authentication] = doc.Authentication
+	}
+
+	if len(doc.AssertionMethod) > 0 && includeRelationship(AssertionMethod) {
+		verificationMethods[AssertionMethod] = doc.AssertionMethod
+	}
+
+	if len(doc.CapabilityDelegation) > 0 && includeRelationship(CapabilityDelegation) {
+		verificationMethods[CapabilityDelegation] = doc.CapabilityDelegation
+	}
+
+	if len(doc.CapabilityInvocation) > 0 && includeRelationship(CapabilityInvocation) {
+		verificationMethods[CapabilityInvocation] = doc.CapabilityInvocation
+	}
+
+	if len(doc.KeyAgreement) > 0 && includeRelationship(KeyAgreement) {
+		verificationMethods[KeyAgreement] = doc.KeyAgreement
+	}
+
+	if len(doc.PublicKey) > 0 && includeRelationship(VerificationRelationshipGeneral) {
+		generalVerificationMethods := make([]VerificationMethod, len(doc.PublicKey))
+
+		for i := range doc.PublicKey {
+			generalVerificationMethods[i] = VerificationMethod{
+				PublicKey:    doc.PublicKey[i],
+				Relationship: VerificationRelationshipGeneral,
+				Embedded:     true,
+			}
+		}
+
+		verificationMethods[VerificationRelationshipGeneral] = generalVerificationMethods
+	}
+
+	return verificationMethods
 }
 
 // ErrProofNotFound is returned when proof is not found
@@ -657,16 +868,22 @@ func populateRawServices(services []Service) []map[string]interface{} {
 	return rawServices
 }
 
-func populateRawPublicKeys(context string, pks []PublicKey) []map[string]interface{} {
+func populateRawPublicKeys(context string, pks []PublicKey) ([]map[string]interface{}, error) {
 	var rawPKs []map[string]interface{}
+
 	for i := range pks {
-		rawPKs = append(rawPKs, populateRawPublicKey(context, &pks[i]))
+		publicKey, err := populateRawPublicKey(context, &pks[i])
+		if err != nil {
+			return nil, err
+		}
+
+		rawPKs = append(rawPKs, publicKey)
 	}
 
-	return rawPKs
+	return rawPKs, nil
 }
 
-func populateRawPublicKey(context string, pk *PublicKey) map[string]interface{} {
+func populateRawPublicKey(context string, pk *PublicKey) (map[string]interface{}, error) {
 	rawPK := make(map[string]interface{})
 	rawPK[jsonldID] = pk.ID
 	rawPK[jsonldType] = pk.Type
@@ -677,21 +894,41 @@ func populateRawPublicKey(context string, pk *PublicKey) map[string]interface{} 
 		rawPK[jsonldController] = pk.Controller
 	}
 
-	if pk.Value != nil {
+	if pk.jsonWebKey != nil {
+		jwkBytes, err := json.Marshal(pk.jsonWebKey)
+		if err != nil {
+			return nil, err
+		}
+
+		rawPK[jsonldPublicKeyjwk] = json.RawMessage(jwkBytes)
+	} else if pk.Value != nil {
 		rawPK[jsonldPublicKeyBase58] = base58.Encode(pk.Value)
 	}
 
-	return rawPK
+	return rawPK, nil
 }
 
-func populateRawAuthentications(context string, vms []VerificationMethod) []interface{} {
-	var rawAuthentications []interface{}
+func populateRawVerificationMethods(context, didID string, vms []VerificationMethod) ([]interface{}, error) {
+	var rawVerificationMethods []interface{}
 
 	for _, vm := range vms {
-		rawAuthentications = append(rawAuthentications, populateRawPublicKey(context, &vm.PublicKey))
+		if vm.Embedded {
+			publicKey, err := populateRawPublicKey(context, &vm.PublicKey)
+			if err != nil {
+				return nil, err
+			}
+
+			rawVerificationMethods = append(rawVerificationMethods, publicKey)
+		} else {
+			if vm.RelativeURL {
+				rawVerificationMethods = append(rawVerificationMethods, makeRelativeDIDURL(vm.PublicKey.ID, didID))
+			} else {
+				rawVerificationMethods = append(rawVerificationMethods, vm.PublicKey.ID)
+			}
+		}
 	}
 
-	return rawAuthentications
+	return rawVerificationMethods, nil
 }
 
 func populateRawProofs(context string, proofs []Proof) []interface{} {
@@ -705,12 +942,13 @@ func populateRawProofs(context string, proofs []Proof) []interface{} {
 
 	for _, p := range proofs {
 		rawProofs = append(rawProofs, map[string]interface{}{
-			jsonldType:    p.Type,
-			jsonldCreated: p.Created,
-			jsonldCreator: p.Creator,
-			k:             base64.RawURLEncoding.EncodeToString(p.ProofValue),
-			jsonldDomain:  p.Domain,
-			jsonldNonce:   base64.RawURLEncoding.EncodeToString(p.Nonce),
+			jsonldType:         p.Type,
+			jsonldCreated:      p.Created,
+			jsonldCreator:      p.Creator,
+			k:                  base64.RawURLEncoding.EncodeToString(p.ProofValue),
+			jsonldDomain:       p.Domain,
+			jsonldNonce:        base64.RawURLEncoding.EncodeToString(p.Nonce),
+			jsonldProofPurpose: p.ProofPurpose,
 		})
 	}
 

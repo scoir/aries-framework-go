@@ -7,14 +7,25 @@ SPDX-License-Identifier: Apache-2.0
 package verifiable_test
 
 import (
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
+	gojose "github.com/square/go-jose/v3"
+
+	"github.com/hyperledger/aries-framework-go/pkg/common/log"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/jsonwebsignature2020"
+	sigverifier "github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/verifiable"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 )
@@ -103,7 +114,7 @@ func ExampleCredential_embedding() {
 		fmt.Println(fmt.Errorf("failed to marshal JWT claims of VC: %w", err))
 	}
 
-	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getSigner(issuerPrivKey), "")
+	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getEd25519Signer(issuerPrivKey), "")
 	if err != nil {
 		fmt.Println(fmt.Errorf("failed to sign VC inside JWT: %w", err))
 	}
@@ -122,9 +133,9 @@ func ExampleCredential_embedding() {
 	fmt.Println(string(vcBytesFromJWS))
 
 	// Output:
-	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSchema":[],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
-	// eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFNjaGVtYSI6W10sImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImRlZ3JlZSI6eyJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUiLCJ1bml2ZXJzaXR5IjoiTUlUIn0sImlkIjoiZGlkOmV4YW1wbGU6ZWJmZWIxZjcxMmViYzZmMWMyNzZlMTJlYzIxIiwibmFtZSI6IkpheWRlbiBEb2UiLCJzcG91c2UiOiJkaWQ6ZXhhbXBsZTpjMjc2ZTEyZWMyMWViZmViMWY3MTJlYmM2ZjEifSwiaXNzdWVyIjp7Im5hbWUiOiJFeGFtcGxlIFVuaXZlcnNpdHkifSwidHlwZSI6WyJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsIlVuaXZlcnNpdHlEZWdyZWVDcmVkZW50aWFsIl19fQ.KhUlkaZwjIiaMzos9FfxLeuIWmJJIPcb_uKz8amzP79ZaKeKwjclYT82q2QWUUObaT2-eB42H5kjycdSKg3tCw
-	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSchema":[],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"type":["VerifiableCredential","UniversityDegreeCredential"]}
+	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
+	// eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFN1YmplY3QiOnsiZGVncmVlIjp7InR5cGUiOiJCYWNoZWxvckRlZ3JlZSIsInVuaXZlcnNpdHkiOiJNSVQifSwiaWQiOiJkaWQ6ZXhhbXBsZTplYmZlYjFmNzEyZWJjNmYxYzI3NmUxMmVjMjEiLCJuYW1lIjoiSmF5ZGVuIERvZSIsInNwb3VzZSI6ImRpZDpleGFtcGxlOmMyNzZlMTJlYzIxZWJmZWIxZjcxMmViYzZmMSJ9LCJpc3N1ZXIiOnsibmFtZSI6IkV4YW1wbGUgVW5pdmVyc2l0eSJ9LCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVW5pdmVyc2l0eURlZ3JlZUNyZWRlbnRpYWwiXX19.7He-0-kAUCgjgMUSI-BmH-9MjI-ixuMV6NUnJCtfLpoOJIkdK0Tf1iU6SWGSURpv67Mi91H-pzQCmW6jzEUABQ
+	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"type":["VerifiableCredential","UniversityDegreeCredential"]}
 }
 
 //nolint:lll
@@ -172,7 +183,7 @@ func ExampleCredential_extraFields() {
 		fmt.Println(fmt.Errorf("failed to marshal JWT claims of VC: %w", err))
 	}
 
-	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getSigner(issuerPrivKey), "")
+	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getEd25519Signer(issuerPrivKey), "")
 	if err != nil {
 		fmt.Println(fmt.Errorf("failed to sign VC inside JWT: %w", err))
 	}
@@ -190,9 +201,9 @@ func ExampleCredential_extraFields() {
 	fmt.Println(string(vcBytesFromJWS))
 
 	// Output:
-	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSchema":[],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
-	// eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFNjaGVtYSI6W10sImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImRlZ3JlZSI6eyJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUiLCJ1bml2ZXJzaXR5IjoiTUlUIn0sImlkIjoiZGlkOmV4YW1wbGU6ZWJmZWIxZjcxMmViYzZmMWMyNzZlMTJlYzIxIiwibmFtZSI6IkpheWRlbiBEb2UiLCJzcG91c2UiOiJkaWQ6ZXhhbXBsZTpjMjc2ZTEyZWMyMWViZmViMWY3MTJlYmM2ZjEifSwiaXNzdWVyIjp7Im5hbWUiOiJFeGFtcGxlIFVuaXZlcnNpdHkifSwicmVmZXJlbmNlTnVtYmVyIjo4LjMyOTQ4NDdlKzA3LCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVW5pdmVyc2l0eURlZ3JlZUNyZWRlbnRpYWwiXX19.IbGTRreDq5wZj3dETz6pnkRHdZOPwm9X-yQ-zyEve7bhOrZucqXRjmCLMkVFjNfcjJy5Xu4f3bcQe71pM--QCA
-	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSchema":[],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
+	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
+	// eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFN1YmplY3QiOnsiZGVncmVlIjp7InR5cGUiOiJCYWNoZWxvckRlZ3JlZSIsInVuaXZlcnNpdHkiOiJNSVQifSwiaWQiOiJkaWQ6ZXhhbXBsZTplYmZlYjFmNzEyZWJjNmYxYzI3NmUxMmVjMjEiLCJuYW1lIjoiSmF5ZGVuIERvZSIsInNwb3VzZSI6ImRpZDpleGFtcGxlOmMyNzZlMTJlYzIxZWJmZWIxZjcxMmViYzZmMSJ9LCJpc3N1ZXIiOnsibmFtZSI6IkV4YW1wbGUgVW5pdmVyc2l0eSJ9LCJyZWZlcmVuY2VOdW1iZXIiOjguMzI5NDg0N2UrMDcsInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJVbml2ZXJzaXR5RGVncmVlQ3JlZGVudGlhbCJdfX0.a5yKMPmDnEXvM-fG3BaOqfdkqdvU4s2rzeZuOzLmkTH1y9sJT-mgTe7map5E9x7abrNVpyYbaH7JaAb9Yhr1DQ
+	// {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
 }
 
 //nolint:lll
@@ -233,7 +244,7 @@ func ExampleNewCredential() {
 		fmt.Println(fmt.Errorf("failed to marshal JWT claims of VC: %w", err))
 	}
 
-	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getSigner(issuerPrivKey), "")
+	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getEd25519Signer(issuerPrivKey), "")
 	if err != nil {
 		fmt.Println(fmt.Errorf("failed to sign VC inside JWT: %w", err))
 	}
@@ -249,7 +260,7 @@ func ExampleNewCredential() {
 	// The Holder then e.g. can save the credential to her personal verifiable credential wallet.
 	fmt.Println(string(vcDecodedBytes))
 
-	// Output: {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSchema":[],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
+	// Output: {"@context":["https://www.w3.org/2018/credentials/v1","https://www.w3.org/2018/credentials/examples/v1"],"credentialSubject":{"degree":{"type":"BachelorDegree","university":"MIT"},"id":"did:example:ebfeb1f712ebc6f1c276e12ec21","name":"Jayden Doe","spouse":"did:example:c276e12ec21ebfeb1f712ebc6f1"},"expirationDate":"2020-01-01T19:23:24Z","id":"http://example.edu/credentials/1872","issuanceDate":"2010-01-01T19:23:24Z","issuer":{"id":"did:example:76e12ec712ebc6f1c221ebfeb1f","name":"Example University"},"referenceNumber":83294847,"type":["VerifiableCredential","UniversityDegreeCredential"]}
 }
 
 //nolint:lll
@@ -261,7 +272,6 @@ func ExampleCredential_JWTClaims() {
     "https://www.w3.org/2018/credentials/v1",
     "https://www.w3.org/2018/credentials/examples/v1"
   ],
-  "credentialSchema": [],
   "credentialSubject": {
     "degree": {
       "type": "BachelorDegree",
@@ -297,7 +307,7 @@ func ExampleCredential_JWTClaims() {
 		fmt.Println(fmt.Errorf("failed to marshal JWT claims of VC: %w", err))
 	}
 
-	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getSigner(issuerPrivKey), "")
+	jws, err := jwtClaims.MarshalJWS(verifiable.EdDSA, getEd25519Signer(issuerPrivKey), "")
 	if err != nil {
 		fmt.Println(fmt.Errorf("failed to sign VC inside JWT: %w", err))
 	}
@@ -305,7 +315,7 @@ func ExampleCredential_JWTClaims() {
 	// The Holder passes JWS to Verifier
 	fmt.Println(jws)
 
-	// Output: eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFNjaGVtYSI6W10sImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImRlZ3JlZSI6eyJ0eXBlIjoiQmFjaGVsb3JEZWdyZWUiLCJ1bml2ZXJzaXR5IjoiTUlUIn0sImlkIjoiZGlkOmV4YW1wbGU6ZWJmZWIxZjcxMmViYzZmMWMyNzZlMTJlYzIxIiwibmFtZSI6IkpheWRlbiBEb2UiLCJzcG91c2UiOiJkaWQ6ZXhhbXBsZTpjMjc2ZTEyZWMyMWViZmViMWY3MTJlYmM2ZjEifSwiaXNzdWVyIjp7Im5hbWUiOiJFeGFtcGxlIFVuaXZlcnNpdHkifSwicmVmZXJlbmNlTnVtYmVyIjo4LjMyOTQ4NDdlKzA3LCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVW5pdmVyc2l0eURlZ3JlZUNyZWRlbnRpYWwiXX19.IbGTRreDq5wZj3dETz6pnkRHdZOPwm9X-yQ-zyEve7bhOrZucqXRjmCLMkVFjNfcjJy5Xu4f3bcQe71pM--QCA
+	// Output: eyJhbGciOiJFZERTQSIsImtpZCI6IiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE1Nzc5MDY2MDQsImlhdCI6MTI2MjM3MzgwNCwiaXNzIjoiZGlkOmV4YW1wbGU6NzZlMTJlYzcxMmViYzZmMWMyMjFlYmZlYjFmIiwianRpIjoiaHR0cDovL2V4YW1wbGUuZWR1L2NyZWRlbnRpYWxzLzE4NzIiLCJuYmYiOjEyNjIzNzM4MDQsInN1YiI6ImRpZDpleGFtcGxlOmViZmViMWY3MTJlYmM2ZjFjMjc2ZTEyZWMyMSIsInZjIjp7IkBjb250ZXh0IjpbImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvZXhhbXBsZXMvdjEiXSwiY3JlZGVudGlhbFN1YmplY3QiOnsiZGVncmVlIjp7InR5cGUiOiJCYWNoZWxvckRlZ3JlZSIsInVuaXZlcnNpdHkiOiJNSVQifSwiaWQiOiJkaWQ6ZXhhbXBsZTplYmZlYjFmNzEyZWJjNmYxYzI3NmUxMmVjMjEiLCJuYW1lIjoiSmF5ZGVuIERvZSIsInNwb3VzZSI6ImRpZDpleGFtcGxlOmMyNzZlMTJlYzIxZWJmZWIxZjcxMmViYzZmMSJ9LCJpc3N1ZXIiOnsibmFtZSI6IkV4YW1wbGUgVW5pdmVyc2l0eSJ9LCJyZWZlcmVuY2VOdW1iZXIiOjguMzI5NDg0N2UrMDcsInR5cGUiOlsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCJVbml2ZXJzaXR5RGVncmVlQ3JlZGVudGlhbCJdfX0.a5yKMPmDnEXvM-fG3BaOqfdkqdvU4s2rzeZuOzLmkTH1y9sJT-mgTe7map5E9x7abrNVpyYbaH7JaAb9Yhr1DQ
 }
 
 //nolint:lll
@@ -349,7 +359,7 @@ func ExampleCredential_AddLinkedDataProof() {
 	err = vc.AddLinkedDataProof(&verifiable.LinkedDataProofContext{
 		Created:                 &issued,
 		SignatureType:           "Ed25519Signature2018",
-		Suite:                   ed25519signature2018.New(suite.WithSigner(getSigner(issuerPrivKey))),
+		Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519Signer(issuerPrivKey))),
 		SignatureRepresentation: verifiable.SignatureJWS,
 		VerificationMethod:      "did:example:123456#key1",
 	})
@@ -369,7 +379,6 @@ func ExampleCredential_AddLinkedDataProof() {
 	//		"https://www.w3.org/2018/credentials/v1",
 	//		"https://www.w3.org/2018/credentials/examples/v1"
 	//	],
-	//	"credentialSchema": [],
 	//	"credentialSubject": {
 	//		"degree": {
 	//			"type": "BachelorDegree",
@@ -388,7 +397,8 @@ func ExampleCredential_AddLinkedDataProof() {
 	//	},
 	//	"proof": {
 	//		"created": "2010-01-01T19:23:24Z",
-	//		"jws": "eyJhbGciOiJFZDI1NTE5U2lnbmF0dXJlMjAxOCIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19..Io85NnajfPXWBtB60QRI-OEfJtKEVv_ij2QTVLYqXdHTs01zCVMbUTyi6m5zIfH6YZELPgty2NujKYlun4L8Dg",
+	//		"jws": "eyJhbGciOiJFZERTQSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19..lrkhpRH4tWl6KzQKHlcyAwSm8qUTXIMSKmD3QASF_uI5QW8NWLxLebXmnQpIM8H7umhLA6dINSYVowcaPdpwBw",
+	//		"proofPurpose": "assertionMethod",
 	//		"type": "Ed25519Signature2018",
 	//		"verificationMethod": "did:example:123456#key1"
 	//	},
@@ -400,18 +410,170 @@ func ExampleCredential_AddLinkedDataProof() {
 	//}
 }
 
-func getSigner(privKey []byte) *testSigner {
-	return &testSigner{privateKey: privKey}
+//nolint:lll,govet
+func ExampleCredential_AddLinkedDataProofMultiProofs() {
+	log.SetLevel("aries-framework/json-ld-processor", log.ERROR)
+
+	vcJSON := `
+{
+  "@context": [
+    "https://www.w3.org/2018/credentials/v1",
+    "https://www.w3.org/2018/credentials/examples/v1"
+  ],
+  "credentialSchema": [],
+  "credentialSubject": {
+    "degree": {
+      "type": "BachelorDegree",
+      "university": "MIT"
+    },
+    "id": "did:example:ebfeb1f712ebc6f1c276e12ec21",
+    "name": "Jayden Doe",
+    "spouse": "did:example:c276e12ec21ebfeb1f712ebc6f1"
+  },
+  "expirationDate": "2020-01-01T19:23:24Z",
+  "id": "http://example.edu/credentials/1872",
+  "issuanceDate": "2009-01-01T19:23:24Z",
+  "issuer": {
+    "id": "did:example:76e12ec712ebc6f1c221ebfeb1f",
+    "name": "Example University"
+  },
+  "referenceNumber": 83294849,
+  "type": [
+    "VerifiableCredential",
+    "UniversityDegreeCredential"
+  ]
+}
+`
+
+	vc, _, err := verifiable.NewCredential([]byte(vcJSON))
+	if err != nil {
+		fmt.Println(fmt.Errorf("failed to decode VC JSON: %w", err))
+	}
+
+	err = vc.AddLinkedDataProof(&verifiable.LinkedDataProofContext{
+		Created:                 &issued,
+		SignatureType:           "Ed25519Signature2018",
+		Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519Signer(issuerPrivKey))),
+		SignatureRepresentation: verifiable.SignatureJWS,
+		VerificationMethod:      "did:example:123456#key1",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	ecdsaPrivKey, err := ecdsa.GenerateKey(btcec.S256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
+	err = vc.AddLinkedDataProof(&verifiable.LinkedDataProofContext{
+		Created:                 &issued,
+		SignatureType:           "JsonWebSignature2020",
+		Suite:                   jsonwebsignature2020.New(suite.WithSigner(getECDSASecp256k1Signer(ecdsaPrivKey))),
+		SignatureRepresentation: verifiable.SignatureJWS,
+		VerificationMethod:      "did:example:123456#key2",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	vcBytes, err := json.Marshal(vc)
+	if err != nil {
+		panic(err)
+	}
+
+	// Verify the VC with two embedded proofs.
+	ed25519Suite := ed25519signature2018.New(suite.WithVerifier(ed25519signature2018.NewPublicKeyVerifier()))
+	jsonWebSignatureSuite := jsonwebsignature2020.New(suite.WithVerifier(jsonwebsignature2020.NewPublicKeyVerifier()))
+
+	_, _, err = verifiable.NewCredential(vcBytes,
+		verifiable.WithEmbeddedSignatureSuites(ed25519Suite, jsonWebSignatureSuite),
+		verifiable.WithPublicKeyFetcher(func(issuerID, keyID string) (*sigverifier.PublicKey, error) {
+			switch keyID {
+			case "#key1":
+				return &sigverifier.PublicKey{
+					Type:  "Ed25519Signature2018",
+					Value: issuerPubKey,
+				}, nil
+
+			case "#key2":
+				return &sigverifier.PublicKey{
+					Type:  "JwsVerificationKey2020",
+					Value: elliptic.Marshal(ecdsaPrivKey.Curve, ecdsaPrivKey.X, ecdsaPrivKey.Y),
+					JWK: &jose.JWK{
+						JSONWebKey: gojose.JSONWebKey{
+							Algorithm: "ES256",
+							Key:       &ecdsaPrivKey.PublicKey,
+						},
+						Crv: "P-256",
+						Kty: "EC",
+					},
+				}, nil
+			}
+
+			return nil, errors.New("unsupported keyID")
+		}),
+		verifiable.WithJSONLDOnlyValidRDF())
+	if err != nil {
+		panic(err)
+	}
+	// Output:
 }
 
-type testSigner struct {
+func getEd25519Signer(privKey []byte) *ed25519Signer {
+	return &ed25519Signer{privateKey: privKey}
+}
+
+type ed25519Signer struct {
 	privateKey []byte
 }
 
-func (s *testSigner) Sign(doc []byte) ([]byte, error) {
+func (s *ed25519Signer) Sign(doc []byte) ([]byte, error) {
 	if l := len(s.privateKey); l != ed25519.PrivateKeySize {
 		return nil, errors.New("ed25519: bad private key length")
 	}
 
 	return ed25519.Sign(s.privateKey, doc), nil
+}
+
+func getECDSASecp256k1Signer(privKey *ecdsa.PrivateKey) *ecdsaSecp256k1Signer {
+	return &ecdsaSecp256k1Signer{
+		privKey: privKey,
+	}
+}
+
+type ecdsaSecp256k1Signer struct {
+	privKey *ecdsa.PrivateKey
+}
+
+func (es *ecdsaSecp256k1Signer) Sign(payload []byte) ([]byte, error) {
+	hasher := crypto.SHA256.New()
+
+	_, err := hasher.Write(payload)
+	if err != nil {
+		panic(err)
+	}
+
+	hashed := hasher.Sum(nil)
+
+	r, s, err := ecdsa.Sign(rand.Reader, es.privKey, hashed)
+	if err != nil {
+		panic(err)
+	}
+
+	curveBits := es.privKey.Curve.Params().BitSize
+
+	keyBytes := curveBits / 8
+	if curveBits%8 > 0 {
+		keyBytes++
+	}
+
+	copyPadded := func(source []byte, size int) []byte {
+		dest := make([]byte, size)
+		copy(dest[size-len(source):], source)
+
+		return dest
+	}
+
+	return append(copyPadded(r.Bytes(), keyBytes), copyPadded(s.Bytes(), keyBytes)...), nil
 }

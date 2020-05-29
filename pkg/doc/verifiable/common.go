@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/piprate/json-gold/ld"
 	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
@@ -48,6 +50,12 @@ func (ja JWSAlgorithm) name() (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported algorithm: %v", ja)
 	}
+}
+
+type jsonldCredentialOpts struct {
+	jsonldDocumentLoader ld.DocumentLoader
+	externalContext      []string
+	jsonldOnlyValidRDF   bool
 }
 
 // PublicKeyFetcher fetches public key for JWT signing verification based on Issuer ID (possibly DID)
@@ -83,26 +91,16 @@ func (r *DIDKeyResolver) resolvePublicKey(issuerDID, keyID string) (*verifier.Pu
 		return nil, fmt.Errorf("resolve DID %s: %w", issuerDID, err)
 	}
 
-	for _, key := range doc.PublicKey {
-		// TODO remove string contains after sidetree create public key with this format DID#KEYID
-		// sidetree now return #KEYID
-		if strings.Contains(key.ID, keyID) {
-			return &verifier.PublicKey{
-				Type:  key.Type,
-				Value: key.Value,
-			}, nil
-		}
-	}
-
-	// if key not found in PublicKey try to find it in authentication
-	for _, auth := range doc.Authentication {
-		// TODO remove string contains after sidetree create public key with this format DID#KEYID
-		// sidetree now return #KEYID
-		if strings.Contains(auth.PublicKey.ID, keyID) {
-			return &verifier.PublicKey{
-				Type:  auth.PublicKey.Type,
-				Value: auth.PublicKey.Value,
-			}, nil
+	methods := doc.VerificationMethods()
+	for _, verificationMethods := range methods {
+		for _, vm := range verificationMethods {
+			if strings.Contains(vm.PublicKey.ID, keyID) {
+				return &verifier.PublicKey{
+					Type:  vm.PublicKey.Type,
+					Value: vm.PublicKey.Value,
+					JWK:   vm.PublicKey.JSONWebKey(),
+				}, nil
+			}
 		}
 	}
 
@@ -120,6 +118,59 @@ type Proof map[string]interface{}
 // CustomFields is a map of extra fields of struct build when unmarshalling JSON which are not
 // mapped to the struct fields.
 type CustomFields map[string]interface{}
+
+// rememberedFields is a map of raw fields used to preserve actual values of fields which pose risk of losing
+// information during parsing, such as dates.
+// TODO currently this is used only for date parsing issues, to be removed as part of [Issue#1772]
+type rememberedFields map[string]interface{}
+
+// fields to be remembered
+const (
+	issuanceDate   = "issuanceDate"
+	expirationDate = "expirationDate"
+)
+
+func (r rememberedFields) GetIssuanceDate(vcDate *time.Time) interface{} {
+	if issueDate, ok := r[issuanceDate]; ok && issueDate != nil {
+		if issueDate != nil && vcDate != nil {
+			t, err := time.Parse(time.RFC3339, issueDate.(string))
+			if err != nil {
+				return vcDate
+			}
+
+			if t.Equal(*vcDate) {
+				return issueDate
+			}
+		}
+	}
+
+	return vcDate
+}
+
+func (r rememberedFields) GetExpirationDate(vcDate *time.Time) interface{} {
+	if expiryDate, ok := r[expirationDate]; ok {
+		if expiryDate != nil && vcDate != nil {
+			t, err := time.Parse(time.RFC3339, expiryDate.(string))
+			if err != nil {
+				return vcDate
+			}
+
+			if t.Equal(*vcDate) {
+				return expiryDate
+			}
+		}
+	}
+
+	return vcDate
+}
+
+func (r rememberedFields) PushIssuanceDate(val interface{}) {
+	r[issuanceDate] = val
+}
+
+func (r rememberedFields) PushExpirationDate(val interface{}) {
+	r[expirationDate] = val
+}
 
 // TypedID defines a flexible structure with id and name fields and arbitrary extra fields
 // kept in CustomFields.

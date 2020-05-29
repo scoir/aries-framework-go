@@ -8,14 +8,20 @@ package localkms
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/ed25519"
 	"fmt"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/google/tink/go/aead"
 	"github.com/google/tink/go/keyset"
 	"github.com/google/tink/go/mac"
+	commonpb "github.com/google/tink/go/proto/common_go_proto"
+	ecdsapb "github.com/google/tink/go/proto/ecdsa_go_proto"
 	tinkpb "github.com/google/tink/go/proto/tink_go_proto"
 	"github.com/google/tink/go/signature"
 
+	"github.com/hyperledger/aries-framework-go/pkg/crypto/tinkcrypto/primitive/composite/ecdhes"
 	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/localkms/internal/keywrapper"
 	"github.com/hyperledger/aries-framework-go/pkg/secretlock"
@@ -25,6 +31,8 @@ import (
 const (
 	// Namespace is the keystore's DB storage namespace
 	Namespace = "kmsdb"
+
+	ecdsaPrivateKeyTypeURL = "type.googleapis.com/google.crypto.tink.EcdsaPrivateKey"
 )
 
 // LocalKMS implements kms.KeyManager to provide key management capabilities using a local db.
@@ -143,24 +151,47 @@ func getKeyTemplate(keyType kms.KeyType) (*tinkpb.KeyTemplate, error) {
 		return aead.ChaCha20Poly1305KeyTemplate(), nil
 	case kms.XChaCha20Poly1305Type:
 		return aead.XChaCha20Poly1305KeyTemplate(), nil
-	case kms.ECDSAP256Type:
+	case kms.ECDSAP256TypeDER:
 		return signature.ECDSAP256KeyWithoutPrefixTemplate(), nil
-	case kms.ECDSAP384Type:
+	case kms.ECDSAP384TypeDER:
 		return signature.ECDSAP384KeyWithoutPrefixTemplate(), nil
-	case kms.ECDSAP521Type:
+	case kms.ECDSAP521TypeDER:
 		return signature.ECDSAP521KeyWithoutPrefixTemplate(), nil
+	case kms.ECDSAP256TypeIEEEP1363:
+		// JWS keys should sign using IEEE_P1363 format only (not DER format)
+		return createECDSAIEEE1363KeyTemplate(commonpb.HashType_SHA256, commonpb.EllipticCurveType_NIST_P256), nil
+	case kms.ECDSAP384TypeIEEEP1363:
+		return createECDSAIEEE1363KeyTemplate(commonpb.HashType_SHA512, commonpb.EllipticCurveType_NIST_P384), nil
+	case kms.ECDSAP521TypeIEEEP1363:
+		return createECDSAIEEE1363KeyTemplate(commonpb.HashType_SHA512, commonpb.EllipticCurveType_NIST_P521), nil
 	case kms.ED25519Type:
 		return signature.ED25519KeyWithoutPrefixTemplate(), nil
 	case kms.HMACSHA256Tag256Type:
 		return mac.HMACSHA256Tag256KeyTemplate(), nil
+	case kms.ECDHES256AES256GCMType:
+		return ecdhes.ECDHES256KWAES256GCMKeyTemplate(), nil
 	default:
 		return nil, fmt.Errorf("key type unrecognized")
 	}
 }
 
-func (l *LocalKMS) storeKeySet(kh *keyset.Handle) (string, error) {
-	w := newWriter(l.store, l.masterKeyURI)
+func createECDSAIEEE1363KeyTemplate(hashType commonpb.HashType, curve commonpb.EllipticCurveType) *tinkpb.KeyTemplate {
+	params := &ecdsapb.EcdsaParams{
+		HashType: hashType,
+		Curve:    curve,
+		Encoding: ecdsapb.EcdsaSignatureEncoding_IEEE_P1363,
+	}
+	format := &ecdsapb.EcdsaKeyFormat{Params: params}
+	serializedFormat, _ := proto.Marshal(format) //nolint:errcheck
 
+	return &tinkpb.KeyTemplate{
+		TypeUrl:          ecdsaPrivateKeyTypeURL,
+		Value:            serializedFormat,
+		OutputPrefixType: tinkpb.OutputPrefixType_RAW,
+	}
+}
+
+func (l *LocalKMS) storeKeySet(kh *keyset.Handle) (string, error) {
 	buf := new(bytes.Buffer)
 	jsonKeysetWriter := keyset.NewJSONWriter(buf)
 
@@ -169,8 +200,14 @@ func (l *LocalKMS) storeKeySet(kh *keyset.Handle) (string, error) {
 		return "", err
 	}
 
+	return writeToStore(l.store, buf)
+}
+
+func writeToStore(store storage.Store, buf *bytes.Buffer, opts ...PrivateKeyOpts) (string, error) {
+	w := newWriter(store, opts...)
+
 	// write buffer to localstorage
-	_, err = w.Write(buf.Bytes())
+	_, err := w.Write(buf.Bytes())
 	if err != nil {
 		return "", err
 	}
@@ -225,4 +262,39 @@ func (l *LocalKMS) ExportPubKeyBytes(id string) ([]byte, error) {
 // associated with it.
 func (l *LocalKMS) PubKeyBytesToHandle(pubKey []byte, kt kms.KeyType) (*keyset.Handle, error) {
 	return publicKeyBytesToHandle(pubKey, kt)
+}
+
+// ImportPrivateKey will import privKey into the KMS storage for the given keyType then returns the new key id and the
+// newly stored keyset.Handle
+// privKey possible types are: *ecdsa.PrivateKey and ed25519.PrivateKey
+// kt possible types are signing key types only (ECDSA keys or Ed25519)
+// opts allows setting the keysetID of the imported key using WithKeyID() option. If the ID is already used,
+// then an error is returned.
+//
+// It returns an error if importing the key fails (key empty, invalid, doesn't match keyType or storing key failed)
+func (l *LocalKMS) ImportPrivateKey(privKey interface{}, kt kms.KeyType,
+	opts ...PrivateKeyOpts) (string, *keyset.Handle, error) {
+	switch pk := privKey.(type) {
+	case *ecdsa.PrivateKey:
+		return l.importECDSAKey(pk, kt, opts...)
+	case ed25519.PrivateKey:
+		return l.importEd25519Key(pk, kt, opts...)
+	default:
+		return "", nil, fmt.Errorf("import private key does not support this key type or key is public")
+	}
+}
+
+// privateKeyOpts holds options for ImportPrivateKey.
+type privateKeyOpts struct {
+	ksID string
+}
+
+// PrivateKeyOpts are the import private key option.
+type PrivateKeyOpts func(opts *privateKeyOpts)
+
+// WithKeyID option is for importing a private key with a specified KeyID.
+func WithKeyID(keyID string) PrivateKeyOpts {
+	return func(opts *privateKeyOpts) {
+		opts.ksID = keyID
+	}
 }

@@ -35,7 +35,9 @@ func NewVerifiableCredentialSDKSteps() *SDKSteps {
 }
 
 const (
-	jwsLinkedDataProof = "JWS Linked data"
+	// TODO support JsonWebSignature2020 and EcdsaSecp256k1Signature2019 signature suites
+	//  (https://github.com/hyperledger/aries-framework-go/issues/1596)
+	jwsLinkedDataProofEd25519Signature2018 = "JWS Ed25519Signature2018 Linked data"
 
 	jwsProof = "JWS"
 )
@@ -107,7 +109,7 @@ func (s *SDKSteps) addVCProof(vc *verifiable.Credential, issuer, proofType strin
 	signer := newSigner(kms, base58.Encode(pubKey.Value))
 
 	switch proofType {
-	case jwsLinkedDataProof:
+	case jwsLinkedDataProofEd25519Signature2018:
 		err := vc.AddLinkedDataProof(&verifiable.LinkedDataProofContext{
 			SignatureType:           "Ed25519Signature2018",
 			Suite:                   ed25519signature2018.New(suite.WithSigner(signer)),
@@ -143,11 +145,11 @@ func (s *SDKSteps) verifyCredential(holder string) error {
 	vdriRegistry := s.bddContext.AgentCtx[holder].VDRIRegistry()
 	pKeyFetcher := verifiable.NewDIDKeyResolver(vdriRegistry).PublicKeyFetcher()
 
-	sigSuite := ed25519signature2018.New(suite.WithVerifier(&ed25519signature2018.PublicKeyVerifier{}))
+	sigSuite := ed25519signature2018.New(suite.WithVerifier(ed25519signature2018.NewPublicKeyVerifier()))
 
 	parsedVC, _, err := verifiable.NewCredential(s.issuedVCBytes,
 		verifiable.WithPublicKeyFetcher(pKeyFetcher),
-		verifiable.WithEmbeddedSignatureSuite(sigSuite))
+		verifiable.WithEmbeddedSignatureSuites(sigSuite))
 	if err != nil {
 		return err
 	}

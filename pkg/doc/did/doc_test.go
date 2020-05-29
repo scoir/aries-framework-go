@@ -14,13 +14,16 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcutil/base58"
+	gojose "github.com/square/go-jose/v3"
 	"github.com/stretchr/testify/require"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/signer"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
@@ -142,6 +145,8 @@ const creator = did + "#key-1"
 const keyType = "Ed25519VerificationKey2018"
 const signatureType = "Ed25519Signature2018"
 
+const missingPubKeyID = "did:example:123456789abcdefghs#key4"
+
 func TestParseOfNull(t *testing.T) {
 	doc, err := ParseDocument([]byte("null"))
 	require.Error(t, err)
@@ -173,16 +178,15 @@ func TestValid(t *testing.T) {
 
 		// test authentication
 		eAuthentication := []VerificationMethod{
-			{PublicKey: PublicKey{
-				ID:         "did:example:123456789abcdefghi#keys-1",
-				Controller: "did:example:123456789abcdefghi",
-				Type:       "Secp256k1VerificationKey2018",
-				Value:      base58.Decode("H3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV")}},
+			{PublicKey: *NewPublicKeyFromBytes("did:example:123456789abcdefghi#keys-1",
+				"Secp256k1VerificationKey2018",
+				"did:example:123456789abcdefghi",
+				base58.Decode("H3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV")), Relationship: Authentication},
 			{PublicKey: PublicKey{
 				ID:         "did:example:123456789abcdefghs#key3",
 				Controller: "did:example:123456789abcdefghs",
 				Type:       "RsaVerificationKey2018",
-				Value:      hexDecodeValue}}}
+				Value:      hexDecodeValue}, Relationship: Authentication, Embedded: true}}
 		require.Equal(t, eAuthentication, doc.Authentication)
 
 		// test public key
@@ -299,13 +303,13 @@ func TestPopulateAuthentications(t *testing.T) {
 	t.Run("test key not exist", func(t *testing.T) {
 		raw := &rawDoc{}
 		require.NoError(t, json.Unmarshal([]byte(validDoc), &raw))
-		raw.Authentication[0] = "did:example:123456789abcdefghs#key4"
+		raw.Authentication[0] = missingPubKeyID
 		bytes, err := json.Marshal(raw)
 		require.NoError(t, err)
 		_, err = ParseDocument(bytes)
 		require.Error(t, err)
 
-		expected := "authentication key did:example:123456789abcdefghs#key4 not exist in did doc public key"
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
 		require.Contains(t, err.Error(), expected)
 	})
 
@@ -313,7 +317,7 @@ func TestPopulateAuthentications(t *testing.T) {
 		raw := &rawDoc{}
 		require.NoError(t, json.Unmarshal([]byte(validDocV011), &raw))
 		m := make(map[string]string)
-		m[jsonldPublicKey] = "did:example:123456789abcdefghs#key4"
+		m[jsonldPublicKey] = missingPubKeyID
 		m["type"] = "key"
 		raw.Authentication[0] = m
 		bytes, err := json.Marshal(raw)
@@ -321,7 +325,75 @@ func TestPopulateAuthentications(t *testing.T) {
 		_, err = ParseDocument(bytes)
 		require.Error(t, err)
 
-		expected := "authentication key did:example:123456789abcdefghs#key4 not exist in did doc public key"
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
+		require.Contains(t, err.Error(), expected)
+	})
+}
+
+func TestPopulateAssertionMethods(t *testing.T) {
+	t.Run("test key not exist", func(t *testing.T) {
+		raw := &rawDoc{}
+		require.NoError(t, json.Unmarshal([]byte(docV011WithVerificationRelationships), &raw))
+
+		raw.AssertionMethod[0] = missingPubKeyID
+		bytes, err := json.Marshal(raw)
+		require.NoError(t, err)
+
+		_, err = ParseDocument(bytes)
+		require.Error(t, err)
+
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
+		require.Contains(t, err.Error(), expected)
+	})
+}
+
+func TestPopulateCapabilityDelegations(t *testing.T) {
+	t.Run("test key not exist", func(t *testing.T) {
+		raw := &rawDoc{}
+		require.NoError(t, json.Unmarshal([]byte(docV011WithVerificationRelationships), &raw))
+
+		raw.CapabilityDelegation[0] = missingPubKeyID
+		bytes, err := json.Marshal(raw)
+		require.NoError(t, err)
+
+		_, err = ParseDocument(bytes)
+		require.Error(t, err)
+
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
+		require.Contains(t, err.Error(), expected)
+	})
+}
+
+func TestPopulateCapabilityInvocations(t *testing.T) {
+	t.Run("test key not exist", func(t *testing.T) {
+		raw := &rawDoc{}
+		require.NoError(t, json.Unmarshal([]byte(docV011WithVerificationRelationships), &raw))
+
+		raw.CapabilityInvocation[0] = missingPubKeyID
+		bytes, err := json.Marshal(raw)
+		require.NoError(t, err)
+
+		_, err = ParseDocument(bytes)
+		require.Error(t, err)
+
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
+		require.Contains(t, err.Error(), expected)
+	})
+}
+
+func TestPopulateKeyAgreements(t *testing.T) {
+	t.Run("test key not exist", func(t *testing.T) {
+		raw := &rawDoc{}
+		require.NoError(t, json.Unmarshal([]byte(docV011WithVerificationRelationships), &raw))
+
+		raw.KeyAgreement[0] = missingPubKeyID
+		bytes, err := json.Marshal(raw)
+		require.NoError(t, err)
+
+		_, err = ParseDocument(bytes)
+		require.Error(t, err)
+
+		expected := fmt.Sprintf("key %s not exist in did doc public key", missingPubKeyID)
 		require.Contains(t, err.Error(), expected)
 	})
 }
@@ -782,7 +854,7 @@ func TestValidateDidDocProof(t *testing.T) {
 }
 
 func TestJSONConversion(t *testing.T) {
-	docs := []string{validDoc, validDocV011}
+	docs := []string{validDoc, validDocV011, validDocWithProofAndJWK, docV011WithVerificationRelationships}
 	for _, d := range docs {
 		// setup -> create Document from json byte data
 		doc, err := ParseDocument([]byte(d))
@@ -804,6 +876,74 @@ func TestJSONConversion(t *testing.T) {
 	}
 }
 
+func TestNewPublicKeyFromJWK(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	jwk := &jose.JWK{
+		JSONWebKey: gojose.JSONWebKey{
+			Key:   pubKey,
+			KeyID: "_Qq0UL2Fq651Q0Fjd6TvnYE-faHiOpRlPVQcY_-tA4A",
+		},
+	}
+
+	// Success.
+	signingKey, err := NewPublicKeyFromJWK(creator, keyType, did, jwk)
+	require.NoError(t, err)
+	require.Equal(t, jwk, signingKey.JSONWebKey())
+	require.Equal(t, []byte(pubKey), signingKey.Value)
+
+	// Error - invalid JWK.
+	jwk = &jose.JWK{
+		JSONWebKey: gojose.JSONWebKey{
+			Key:   nil,
+			KeyID: "_Qq0UL2Fq651Q0Fjd6TvnYE-faHiOpRlPVQcY_-tA4A",
+		},
+	}
+	signingKey, err = NewPublicKeyFromJWK(creator, keyType, did, jwk)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "convert JWK to public key bytes")
+	require.Nil(t, signingKey)
+}
+
+func TestJSONWebKey(t *testing.T) {
+	const didContext = "https://w3id.org/did/v1"
+
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	jwk := &jose.JWK{
+		JSONWebKey: gojose.JSONWebKey{
+			Key:   pubKey,
+			KeyID: "_Qq0UL2Fq651Q0Fjd6TvnYE-faHiOpRlPVQcY_-tA4A",
+		},
+	}
+
+	signingKey, err := NewPublicKeyFromJWK(creator, keyType, did, jwk)
+	require.NoError(t, err)
+	require.Equal(t, jwk, signingKey.JSONWebKey())
+
+	createdTime := time.Now()
+
+	didDoc := &Doc{
+		Context:   []string{didContext},
+		ID:        did,
+		PublicKey: []PublicKey{*signingKey},
+		Created:   &createdTime,
+		Updated:   &createdTime,
+	}
+
+	didDocBytes, err := didDoc.JSONBytes()
+	require.NoError(t, err)
+
+	parsedDidDoc, err := ParseDocument(didDocBytes)
+	require.NoError(t, err)
+
+	parsedDidDocBytes, err := parsedDidDoc.JSONBytes()
+	require.NoError(t, err)
+	require.Equal(t, didDocBytes, parsedDidDocBytes)
+}
+
 func TestVerifyProof(t *testing.T) {
 	docs := []string{validDoc, validDocV011}
 	for _, d := range docs {
@@ -814,7 +954,7 @@ func TestVerifyProof(t *testing.T) {
 
 		signedDoc := createSignedDidDocument(privKey, pubKey)
 
-		s := ed25519signature2018.New(suite.WithVerifier(&ed25519signature2018.PublicKeyVerifier{}))
+		s := ed25519signature2018.New(suite.WithVerifier(ed25519signature2018.NewPublicKeyVerifier()))
 
 		// happy path - valid signed document
 		doc, err := ParseDocument(signedDoc)
@@ -822,6 +962,11 @@ func TestVerifyProof(t *testing.T) {
 		require.NotNil(t, doc)
 		err = doc.VerifyProof(s)
 		require.NoError(t, err)
+
+		// error - no suites are passed, verifier is not created
+		err = doc.VerifyProof()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "create verifier")
 
 		// error - doc with invalid proof value
 		doc.Proof[0].ProofValue = []byte("invalid")
@@ -1045,7 +1190,7 @@ func TestDIDSchemas(t *testing.T) {
 				didStr: `{
         "@context": "https://www.w3.org/2019/did/v1",
         "id": "did:sov:danube:CDEabPCipwE51bg7KF9yXt",
-        "service": [],
+        "service": [{"type": "example","serviceEndpoint": "http://example.com"}],
         "authentication": [{
             "type": "Ed25519SignatureAuthentication2018",
             "publicKey": ["did:sov:danube:CDEabPCipwE51bg7KF9yXt#key-1"]
@@ -1126,8 +1271,130 @@ func TestDIDSchemas(t *testing.T) {
 	})
 }
 
+// nolint:lll
+func TestDoc_VerificationMethods(t *testing.T) {
+	didDocStr := `
+{
+  "@context": "https://w3id.org/did/v1",
+  "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+  "service": [
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#openid",
+      "type": "OpenIdConnectVersion1.0Service",
+      "serviceEndpoint": "https://openid.example.com/"
+    }
+  ],
+  "assertionMethod": [
+    "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#edv"
+  ],
+  "authentication": [
+    "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#edv",
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#authentication",
+      "type": "Ed25519VerificationKey2018",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyBase58": "H3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV"
+    }
+  ],
+  "capabilityDelegation": [
+    "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#edv"
+  ],
+  "capabilityInvocation": [
+    "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#edv"
+  ],
+  "keyAgreement": [
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#keyAgreement",
+      "type": "X25519KeyAgreementKey2019",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyBase58": "ENpfk9K9J6uss5qu6BrAszioE732mYCobmMPSpvB3faM"
+    }
+  ],
+  "publicKey": [
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#primary",
+      "type": "Secp256k1VerificationKey2018",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyHex": "0361f286ada2a6b2c74bc6ed44a71ef59fb9dd15eca9283cbe5608aeb516730f33"
+    },
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#recovery",
+      "type": "Secp256k1VerificationKey2018",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyHex": "02c00982681081372cbb941cd2c9745908316e1373ac333479f0deabcad0e9d574"
+    },
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#edv",
+      "type": "Ed25519VerificationKey2018",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyBase58": "atEBuHypSkQx7486xT5FUkoBLqvNcWyNK2Xz9EPjdMy"
+    },
+    {
+      "id": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A#key-JUvpllMEYUZ2joO59UNui_XYDqxVqiFLLAJ8klWuPBw",
+      "type": "Ed25519VerificationKey2018",
+      "controller": "did:elem:ropsten:EiAS3mqC4OLMKOwcz3ItIL7XfWduPT7q3Fa4vHgiCfSG2A",
+      "publicKeyJwk": {
+        "crv": "secp256k1",
+        "kid": "JUvpllMEYUZ2joO59UNui_XYDqxVqiFLLAJ8klWuPBw",
+        "kty": "EC",
+        "x": "dWCvM4fTdeM0KmloF57zxtBPXTOythHPMm1HCLrdd3A",
+        "y": "36uMVGM7hnw-N6GnjFcihWE3SkrhMLzzLCdPMXPEXlA"
+      }
+    }
+  ]
+}
+`
+
+	doc, err := ParseDocument([]byte(didDocStr))
+	require.NoError(t, err)
+
+	// Get all verification methods.
+	methods := doc.VerificationMethods()
+	require.Len(t, methods, 6)
+	require.Len(t, methods[AssertionMethod], 1)
+	require.Len(t, methods[Authentication], 2)
+	require.Len(t, methods[CapabilityInvocation], 1)
+	require.Len(t, methods[CapabilityDelegation], 1)
+	require.Len(t, methods[KeyAgreement], 1)
+	require.Len(t, methods[VerificationRelationshipGeneral], 4)
+
+	// Get verification methods of several relationships.
+	methods = doc.VerificationMethods(AssertionMethod, Authentication)
+	require.Len(t, methods, 2)
+	require.Len(t, methods[AssertionMethod], 1)
+	require.Len(t, methods[Authentication], 2)
+
+	// Get verification methods of concrete relationship.
+	methods = doc.VerificationMethods(AssertionMethod)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[AssertionMethod], 1)
+
+	methods = doc.VerificationMethods(Authentication)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[Authentication], 2)
+
+	methods = doc.VerificationMethods(CapabilityInvocation)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[CapabilityInvocation], 1)
+
+	methods = doc.VerificationMethods(CapabilityDelegation)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[CapabilityDelegation], 1)
+
+	methods = doc.VerificationMethods(KeyAgreement)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[KeyAgreement], 1)
+
+	methods = doc.VerificationMethods(VerificationRelationshipGeneral)
+	require.Len(t, methods, 1)
+	require.Len(t, methods[VerificationRelationshipGeneral], 4)
+}
+
 func createDidDocumentWithSigningKey(pubKey []byte) *Doc {
-	const didContext = "https://w3id.org/did/v1"
+	const (
+		didContext      = "https://www.w3.org/ns/did/v1"
+		securityContext = "https://w3id.org/security/v1"
+	)
 
 	signingKey := PublicKey{
 		ID:         creator,
@@ -1139,11 +1406,10 @@ func createDidDocumentWithSigningKey(pubKey []byte) *Doc {
 	createdTime := time.Now()
 
 	didDoc := &Doc{
-		Context:   []string{didContext},
+		Context:   []string{didContext, securityContext},
 		ID:        did,
 		PublicKey: []PublicKey{signingKey},
 		Created:   &createdTime,
-		Updated:   &createdTime,
 	}
 
 	return didDoc
@@ -1207,6 +1473,40 @@ const validDocWithProof = `{
 	}],
 	"updated": "2019-09-23T14:16:59.261024-04:00"
 }`
+
+const validDocWithProofAndJWK = `
+{
+  "@context": [
+    "https://w3id.org/did/v1"
+  ],
+  "created": "2019-09-23T14:16:59.261024-04:00",
+  "id": "did:method:abc",
+  "proof": [
+    {
+      "created": "2019-09-23T14:16:59.484733-04:00",
+      "creator": "did:method:abc#key-1",
+      "domain": "",
+      "nonce": "",
+      "proofValue": "6mdES87erjP5r1qCSRW__otj-A_Rj0YgRO7XU_0Amhwdfa7AAmtGUSFGflR_fZqPYrY9ceLRVQCJ49s0q7-LBA",
+      "type": "Ed25519Signature2018"
+    }
+  ],
+  "publicKey": [
+    {
+      "controller": "did:method:abc",
+      "id": "did:method:abc#key-1",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "alg": "EdDSA",
+        "x": "DEfkntM3vCV5WtS-1G9cBMmkNJSPlVdjwSdHmHbirTg"
+      },
+      "type": "Ed25519VerificationKey2018"
+    }
+  ],
+  "updated": "2019-09-23T14:16:59.261024-04:00"
+}
+`
 
 const validDocV011WithProof = `{
 	"@context": ["https://w3id.org/did/v0.11"],
@@ -1281,4 +1581,33 @@ const docV011WithInvalidUpdated = `{
 	"created": "2019-09-23T14:16:59.484733-04:00",
 	"updated": "2019-9-23T14:16:59.261024-04:00",
 	"id": "did:method:abc"
+}`
+
+const docV011WithVerificationRelationships = `{
+	"@context": ["https://w3id.org/did/v0.11"],
+	"id": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+	"assertionMethod": [
+		"did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+	],
+	"authentication": [
+		"#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+	],
+	"capabilityDelegation": [
+		"did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+	],
+	"capabilityInvocation": [
+		"did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+	],
+	"keyAgreement": [{
+		"id": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#zBzoR5sqFgi6q3iFia8JPNfENCpi7RNSTKF7XNXX96SBY4",
+		"type": "X25519KeyAgreementKey2019",
+		"controller": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+		"publicKeyBase58": "JhNWeSVLMYccCk7iopQW4guaSJTojqpMEELgSLhKwRr"
+	}],
+	"publicKey": [{
+		"id": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+		"type": "Ed25519VerificationKey2018",
+		"controller": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+		"publicKeyBase58": "B12NYF8RrR3h41TDCTJojY59usg3mbtbjnFs7Eud1Y6u"
+	}]
 }`

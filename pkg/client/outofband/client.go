@@ -12,24 +12,54 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/decorator"
+	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/didexchange"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/outofband"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/did"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
 )
 
+type (
+	// Request is the out-of-band protocol's 'request' message.
+	Request outofband.Request
+	// Invitation is this protocol's `invitation` message
+	Invitation outofband.Invitation
+)
+
 const (
 	// RequestMsgType is the request message's '@type'.
 	RequestMsgType = outofband.RequestMsgType
+	// InvitationMsgType is the '@type' for the invitation message.
+	InvitationMsgType = outofband.InvitationMsgType
 )
 
-// RequestOptions allow you to customize the way request messages are built.
-type RequestOptions func(*Request) error
+// Event is a container of out-of-band protocol-specific properties for DIDCommActions and StateMsgs.
+type Event interface {
+	// ConnectionID of the connection record, once it's created.
+	// This becomes available in a post-state event unless an error condition is encountered.
+	ConnectionID() string
+	// Error is non-nil if an error is encountered.
+	Error() error
+}
+
+// MessageOption allow you to customize the way out-of-band messages are built.
+type MessageOption func(*message) error
+
+type message struct {
+	Label    string
+	Goal     string
+	GoalCode string
+	Service  []interface{}
+}
 
 type oobService interface {
+	service.Event
 	AcceptRequest(request *outofband.Request) (string, error)
+	AcceptInvitation(inv *outofband.Invitation) (string, error)
 	SaveRequest(request *outofband.Request) error
+	SaveInvitation(inv *outofband.Invitation) error
 }
 
 // Provider provides the dependencies for the client.
@@ -42,6 +72,7 @@ type Provider interface {
 // Client for the Out-Of-Band protocol:
 // https://github.com/hyperledger/aries-rfcs/blob/master/features/0434-outofband/README.md
 type Client struct {
+	service.Event
 	didDocSvcFunc func() (*did.Service, error)
 	oobService    oobService
 }
@@ -59,6 +90,7 @@ func New(p Provider) (*Client, error) {
 	}
 
 	return &Client{
+		Event:         oobSvc,
 		didDocSvcFunc: didServiceBlockFunc(p),
 		oobService:    oobSvc,
 	}, nil
@@ -68,15 +100,27 @@ func New(p Provider) (*Client, error) {
 // At least one attachment must be provided.
 // Service entries can be optionally provided. If none are provided then a new one will be automatically created for
 // you.
-func (c *Client) CreateRequest(opts ...RequestOptions) (*Request, error) {
-	req := &Request{&outofband.Request{}}
+func (c *Client) CreateRequest(attchmnts []*decorator.Attachment, opts ...MessageOption) (*Request, error) {
+	msg := &message{}
 
 	for _, opt := range opts {
-		if err := opt(req); err != nil {
+		if err := opt(msg); err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 	}
 
+	req := &Request{
+		ID:       uuid.New().String(),
+		Type:     RequestMsgType,
+		Label:    msg.Label,
+		Goal:     msg.Goal,
+		GoalCode: msg.GoalCode,
+		Service:  msg.Service,
+		Requests: attchmnts,
+	}
+
+	// TODO open question whether requests w/o attachments should be allowed:
+	//  https://github.com/hyperledger/aries-rfcs/issues/451
 	if len(req.Requests) == 0 {
 		return nil, errors.New("must provide at least one attachment to create an out-of-band request")
 	}
@@ -90,10 +134,9 @@ func (c *Client) CreateRequest(opts ...RequestOptions) (*Request, error) {
 		req.Service = []interface{}{svc}
 	}
 
-	req.ID = uuid.New().String()
-	req.Type = RequestMsgType
+	cast := outofband.Request(*req)
 
-	err := c.oobService.SaveRequest(req.Request)
+	err := c.oobService.SaveRequest(&cast)
 	if err != nil {
 		return nil, fmt.Errorf("outofband service failed to save request : %w", err)
 	}
@@ -101,17 +144,58 @@ func (c *Client) CreateRequest(opts ...RequestOptions) (*Request, error) {
 	return req, nil
 }
 
+// CreateInvitation creates and saves an out-of-band invitation.
+// Protocols is an optional list of protocol identifier URIs that can be used to form connections. A default
+// will be set if none are provided.
+func (c *Client) CreateInvitation(protocols []string, opts ...MessageOption) (*Invitation, error) {
+	msg := &message{}
+
+	for _, opt := range opts {
+		if err := opt(msg); err != nil {
+			return nil, fmt.Errorf("failed to create invitation: %w", err)
+		}
+	}
+
+	inv := &Invitation{
+		ID:        uuid.New().String(),
+		Type:      InvitationMsgType,
+		Label:     msg.Label,
+		Goal:      msg.Goal,
+		GoalCode:  msg.GoalCode,
+		Service:   msg.Service,
+		Protocols: protocols,
+	}
+
+	if len(inv.Service) == 0 {
+		svc, err := c.didDocSvcFunc()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create a new inlined did doc service block : %w", err)
+		}
+
+		inv.Service = []interface{}{svc}
+	}
+
+	if len(inv.Protocols) == 0 {
+		// TODO should be injected into client
+		//  https://github.com/hyperledger/aries-framework-go/issues/1691
+		inv.Protocols = []string{didexchange.PIURI}
+	}
+
+	cast := outofband.Invitation(*inv)
+
+	err := c.oobService.SaveInvitation(&cast)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save outofband invitation : %w", err)
+	}
+
+	return inv, nil
+}
+
 // AcceptRequest from another agent and return the ID of a new connection record.
 func (c *Client) AcceptRequest(r *Request) (string, error) {
-	connID, err := c.oobService.AcceptRequest(&outofband.Request{
-		ID:       r.ID,
-		Type:     r.Type,
-		Label:    r.Label,
-		Goal:     r.Goal,
-		GoalCode: r.GoalCode,
-		Requests: r.Requests,
-		Service:  r.Service,
-	})
+	cast := outofband.Request(*r)
+
+	connID, err := c.oobService.AcceptRequest(&cast)
 	if err != nil {
 		return "", fmt.Errorf("out-of-band service failed to accept request : %w", err)
 	}
@@ -119,27 +203,31 @@ func (c *Client) AcceptRequest(r *Request) (string, error) {
 	return connID, err
 }
 
-// WithLabel allows you to specify the label on the message.
-func WithLabel(l string) RequestOptions {
-	return func(r *Request) error {
-		r.Label = l
-		return nil
+// AcceptInvitation from another agent and return the ID of the new connection records.
+func (c *Client) AcceptInvitation(i *Invitation) (string, error) {
+	cast := outofband.Invitation(*i)
+
+	connID, err := c.oobService.AcceptInvitation(&cast)
+	if err != nil {
+		return "", fmt.Errorf("out-of-band service failed to accept invitation : %w", err)
 	}
+
+	return connID, err
 }
 
-// WithAttachments allows you to specify attachments to include in the `request~attach` property.
-func WithAttachments(a ...*decorator.Attachment) RequestOptions {
-	return func(r *Request) error {
-		r.Requests = a
+// WithLabel allows you to specify the label on the message.
+func WithLabel(l string) MessageOption {
+	return func(m *message) error {
+		m.Label = l
 		return nil
 	}
 }
 
 // WithGoal allows you to specify the `goal` and `goalCode` for the message.
-func WithGoal(goal, goalCode string) RequestOptions {
-	return func(r *Request) error {
-		r.Goal = goal
-		r.GoalCode = goalCode
+func WithGoal(goal, goalCode string) MessageOption {
+	return func(m *message) error {
+		m.Goal = goal
+		m.GoalCode = goalCode
 
 		return nil
 	}
@@ -147,20 +235,19 @@ func WithGoal(goal, goalCode string) RequestOptions {
 
 // WithServices allows you to specify service entries to include in the request message.
 // Each entry must be either a valid DID (string) or a `service` object.
-func WithServices(svcs ...interface{}) RequestOptions {
-	return func(r *Request) error {
+func WithServices(svcs ...interface{}) MessageOption {
+	return func(m *message) error {
 		all := make([]interface{}, len(svcs))
 
 		for i := range svcs {
 			switch svc := svcs[i].(type) {
 			case string:
-				_, err := did.Parse(svc)
-
-				if err != nil {
-					return fmt.Errorf("failed to parse did : %w", err)
-				}
-
 				all[i] = svc
+
+				// TODO uncomment this after fixing the sidetree implementation in BDD tests.
+				//  That sidetree vdri is producing invalid DID IDs.
+				//  https://github.com/hyperledger/aries-framework-go/issues/1642
+				// _, err := did.Parse(svc)
 			case *did.Service:
 				all[i] = svc
 			default:
@@ -168,7 +255,7 @@ func WithServices(svcs ...interface{}) RequestOptions {
 			}
 		}
 
-		r.Service = all
+		m.Service = all
 
 		return nil
 	}

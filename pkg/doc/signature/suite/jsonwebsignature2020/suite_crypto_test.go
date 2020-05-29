@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/tink/go/keyset"
+	"github.com/stretchr/testify/require"
 
 	"github.com/hyperledger/aries-framework-go/pkg/crypto/tinkcrypto"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
@@ -25,12 +26,10 @@ import (
 func TestNewCryptoSignerAndVerifier(t *testing.T) {
 	lKMS := createKMS()
 
-	kid, kh := createKeyHandle(lKMS, kmsapi.ECDSAP256Type)
+	kid, kh := createKeyHandle(lKMS, kmsapi.ECDSAP256TypeIEEEP1363)
 
 	tinkCrypto, err := tinkcrypto.New()
-	if err != nil {
-		panic("failed to create tinkcrypto")
-	}
+	require.NoError(t, err)
 
 	doc := []byte("test doc")
 
@@ -43,24 +42,18 @@ func TestNewCryptoSignerAndVerifier(t *testing.T) {
 	ss := New(suite.WithSigner(suiteSigner), suite.WithVerifier(suiteVerifier))
 
 	docSig, err := ss.Sign(doc)
-	if err != nil {
-		panic("failed to create a signature")
-	}
+	require.NoError(t, err)
 
 	pubKeyBytes, err := lKMS.ExportPubKeyBytes(kid)
-	if err != nil {
-		panic("failed to export public key bytes")
-	}
+	require.NoError(t, err)
 
 	pubKey := &sigverifier.PublicKey{
-		Type:  kmsapi.ECDSAP256,
+		Type:  kmsapi.ECDSAP256IEEEP1363,
 		Value: pubKeyBytes,
 	}
 
 	err = ss.Verify(pubKey, doc, docSig)
-	if err != nil {
-		panic("failed to verify signature")
-	}
+	require.NoError(t, err)
 }
 
 // LocalCrypto defines a verifier which is based on Local KMS and Crypto
@@ -111,8 +104,8 @@ func createKMS() *localkms.LocalKMS {
 
 func mapKeyTypeToKMS(t string) (kmsapi.KeyType, error) {
 	switch t {
-	case kmsapi.ECDSAP256:
-		return kmsapi.ECDSAP256Type, nil
+	case kmsapi.ECDSAP256IEEEP1363:
+		return kmsapi.ECDSAP256TypeIEEEP1363, nil
 	default:
 		return "", fmt.Errorf("unsupported key type: %s", t)
 	}

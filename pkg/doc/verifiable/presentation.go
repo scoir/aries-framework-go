@@ -12,36 +12,45 @@ import (
 
 	"github.com/xeipuuv/gojsonschema"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/jose"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/jwt"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
 )
 
 const basePresentationSchema = `
 {
   "required": [
     "@context",
-    "type",
-    "verifiableCredential"
+    "type"
   ],
   "properties": {
     "@context": {
-      "type": "array",
-      "items": [
+      "oneOf": [
         {
           "type": "string",
-          "pattern": "^https://www.w3.org/2018/credentials/v1$"
-        }
-      ],
-      "uniqueItems": true,
-      "additionalItems": {
-        "oneOf": [
-          {
-            "type": "object"
-          },
-          {
-            "type": "string"
+          "const": "https://www.w3.org/2018/credentials/v1"
+        },
+        {
+          "type": "array",
+          "items": [
+            {
+              "type": "string",
+              "const": "https://www.w3.org/2018/credentials/v1"
+            }
+          ],
+          "uniqueItems": true,
+          "additionalItems": {
+            "oneOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "string"
+              }
+            ]
           }
-        ]
-      }
+        }
+      ]
     },
     "id": {
       "type": "string",
@@ -78,6 +87,9 @@ const basePresentationSchema = `
         },
         {
           "type": "string"
+        },
+        {
+          "type": "null"
         }
       ]
     },
@@ -155,14 +167,13 @@ type MarshalledCredential []byte
 
 // Presentation Verifiable Presentation base data model definition
 type Presentation struct {
-	Context        []string
-	CustomContext  []interface{}
-	ID             string
-	Type           []string
-	credentials    []interface{}
-	Holder         string
-	Proofs         []Proof
-	RefreshService *TypedID
+	Context       []string
+	CustomContext []interface{}
+	ID            string
+	Type          []string
+	credentials   []interface{}
+	Holder        string
+	Proofs        []Proof
 }
 
 // MarshalJSON converts Verifiable Presentation to JSON bytes.
@@ -194,16 +205,50 @@ func (vp *Presentation) Credentials() []interface{} {
 // SetCredentials defines credentials of presentation.
 // The credential could be string/byte (probably serialized JWT) or Credential structure.
 func (vp *Presentation) SetCredentials(creds ...interface{}) error {
+	var vpCreds []interface{}
+
+	convertToVC := func(vcStr string) (interface{}, error) {
+		// Check if passed VC is correct one.
+		vc, err := NewUnverifiedCredential([]byte(vcStr))
+		if err != nil {
+			return nil, fmt.Errorf("check VC: %w", err)
+		}
+
+		// If VC was passed in JWT form, left it as is. Otherwise, return parsed VC
+		if jose.IsCompactJWS(vcStr) {
+			return vcStr, nil
+		}
+
+		return vc, nil
+	}
+
 	for i := range creds {
-		switch creds[i].(type) {
-		case []byte, string, *Credential:
-			// Acceptable.
+		switch rawVC := creds[i].(type) {
+		case *Credential:
+			vpCreds = append(vpCreds, rawVC)
+
+		case []byte:
+			vc, err := convertToVC(string(rawVC))
+			if err != nil {
+				return err
+			}
+
+			vpCreds = append(vpCreds, vc)
+
+		case string:
+			vc, err := convertToVC(rawVC)
+			if err != nil {
+				return err
+			}
+
+			vpCreds = append(vpCreds, vc)
+
 		default:
 			return errors.New("unsupported credential format")
 		}
 	}
 
-	vp.credentials = creds
+	vp.credentials = vpCreds
 
 	return nil
 }
@@ -240,32 +285,36 @@ func (vp *Presentation) raw() (*rawPresentation, error) {
 	}
 
 	return &rawPresentation{
-		Context:        vp.Context,
-		ID:             vp.ID,
-		Type:           vp.Type,
-		Credential:     vp.credentials,
-		Holder:         vp.Holder,
-		Proof:          proof,
-		RefreshService: vp.RefreshService,
+		// TODO single value contexts should be compacted as part of Issue [#1730]
+		// Not compacting now to support interoperability
+		Context:    vp.Context,
+		ID:         vp.ID,
+		Type:       typesToRaw(vp.Type),
+		Credential: vp.credentials,
+		Holder:     vp.Holder,
+		Proof:      proof,
 	}, nil
 }
 
 // rawPresentation is a basic verifiable credential
 type rawPresentation struct {
-	Context        interface{}     `json:"@context,omitempty"`
-	ID             string          `json:"id,omitempty"`
-	Type           interface{}     `json:"type,omitempty"`
-	Credential     interface{}     `json:"verifiableCredential,omitempty"`
-	Holder         string          `json:"holder,omitempty"`
-	Proof          json.RawMessage `json:"proof,omitempty"`
-	RefreshService *TypedID        `json:"refreshService,omitempty"`
+	Context    interface{}     `json:"@context,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Type       interface{}     `json:"type,omitempty"`
+	Credential interface{}     `json:"verifiableCredential"`
+	Holder     string          `json:"holder,omitempty"`
+	Proof      json.RawMessage `json:"proof,omitempty"`
 }
 
 // presentationOpts holds options for the Verifiable Presentation decoding
 type presentationOpts struct {
 	publicKeyFetcher   PublicKeyFetcher
 	disabledProofCheck bool
-	ldpSuite           verifierSignatureSuite
+	ldpSuites          []verifier.SignatureSuite
+	strictValidation   bool
+	requireVC          bool
+
+	jsonldCredentialOpts
 }
 
 // PresentationOpt is the Verifiable Presentation decoding option
@@ -279,10 +328,33 @@ func WithPresPublicKeyFetcher(fetcher PublicKeyFetcher) PresentationOpt {
 	}
 }
 
-// WithPresEmbeddedSignatureSuites defines the suite which is used to check embedded linked data proof of VP.
-func WithPresEmbeddedSignatureSuites(suite verifierSignatureSuite) PresentationOpt {
+// WithPresEmbeddedSignatureSuites defines the suites which are used to check embedded linked data proof of VP.
+func WithPresEmbeddedSignatureSuites(suites ...verifier.SignatureSuite) PresentationOpt {
 	return func(opts *presentationOpts) {
-		opts.ldpSuite = suite
+		opts.ldpSuites = suites
+	}
+}
+
+// WithDisabledPresentationProofCheck option for disabling of proof check.
+func WithDisabledPresentationProofCheck() PresentationOpt {
+	return func(opts *presentationOpts) {
+		opts.disabledProofCheck = true
+	}
+}
+
+// WithPresStrictValidation enabled strict JSON-LD validation of VP.
+// In case of JSON-LD validation, the comparison of JSON-LD VP document after compaction with original VP one is made.
+// In case of mismatch a validation exception is raised.
+func WithPresStrictValidation() PresentationOpt {
+	return func(opts *presentationOpts) {
+		opts.strictValidation = true
+	}
+}
+
+// WithPresRequireVC option enables check for at least one verifiableCredential in the VP.
+func WithPresRequireVC() PresentationOpt {
+	return func(opts *presentationOpts) {
+		opts.requireVC = true
 	}
 }
 
@@ -301,12 +373,21 @@ func NewPresentation(vpData []byte, opts ...PresentationOpt) (*Presentation, err
 		return nil, err
 	}
 
-	err = validatePresentation(vpDataDecoded)
+	err = validateVP(vpDataDecoded, vpOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	return newPresentation(vpRaw, vpOpts)
+	p, err := newPresentation(vpRaw, vpOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	if vpOpts.requireVC && len(p.credentials) == 0 {
+		return nil, fmt.Errorf("verifiableCredential is required")
+	}
+
+	return p, nil
 }
 
 // NewUnverifiedPresentation decodes Verifiable Presentation from bytes which could be marshalled JSON or
@@ -348,14 +429,13 @@ func newPresentation(vpRaw *rawPresentation, vpOpts *presentationOpts) (*Present
 	}
 
 	return &Presentation{
-		Context:        context,
-		CustomContext:  customContext,
-		ID:             vpRaw.ID,
-		Type:           types,
-		credentials:    creds,
-		Holder:         vpRaw.Holder,
-		Proofs:         proofs,
-		RefreshService: vpRaw.RefreshService,
+		Context:       context,
+		CustomContext: customContext,
+		ID:            vpRaw.ID,
+		Type:          types,
+		credentials:   creds,
+		Holder:        vpRaw.Holder,
+		Proofs:        proofs,
 	}, nil
 }
 
@@ -366,6 +446,11 @@ func newPresentation(vpRaw *rawPresentation, vpOpts *presentationOpts) (*Present
 // 3) struct (should be map[string]interface{}) representing credential data model
 // 4) the same as 3) but as array - i.e. zero or more credentials structs.
 func decodeCredentials(rawCred interface{}, opts *presentationOpts) ([]interface{}, error) {
+	// Accept the case when VP does not have any VCs.
+	if rawCred == nil {
+		return nil, nil
+	}
+
 	marshalSingleCredFn := func(cred interface{}) (interface{}, error) {
 		// Check the case when VC is defined in string format (e.g. JWT).
 		// Decode credential and keep result of decoding.
@@ -386,6 +471,11 @@ func decodeCredentials(rawCred interface{}, opts *presentationOpts) ([]interface
 
 	switch cred := rawCred.(type) {
 	case []interface{}:
+		// Accept the case when VP does not have any VCs.
+		if len(cred) == 0 {
+			return nil, nil
+		}
+
 		// 1 or more credentials
 		creds := make([]interface{}, len(cred))
 
@@ -414,11 +504,24 @@ func mapOpts(vpOpts *presentationOpts) *credentialOpts {
 	return &credentialOpts{
 		publicKeyFetcher:   vpOpts.publicKeyFetcher,
 		disabledProofCheck: vpOpts.disabledProofCheck,
-		ldpSuite:           vpOpts.ldpSuite,
+		ldpSuites:          vpOpts.ldpSuites,
 	}
 }
 
-func validatePresentation(data []byte) error {
+func validateVP(data []byte, opts *presentationOpts) error {
+	err := validateVPJSONSchema(data)
+	if err != nil {
+		return err
+	}
+
+	return validateVPJSONLD(data, opts)
+}
+
+func validateVPJSONLD(vpBytes []byte, opts *presentationOpts) error {
+	return compactJSONLD(string(vpBytes), &opts.jsonldCredentialOpts, opts.strictValidation)
+}
+
+func validateVPJSONSchema(data []byte) error {
 	loader := gojsonschema.NewStringLoader(string(data))
 
 	result, err := gojsonschema.Validate(basePresentationSchemaLoader, loader)

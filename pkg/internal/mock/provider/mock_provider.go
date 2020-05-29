@@ -6,9 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 package provider
 
 import (
+	"github.com/hyperledger/aries-framework-go/pkg/crypto"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/dispatcher"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/packer"
 	vdriapi "github.com/hyperledger/aries-framework-go/pkg/framework/aries/api/vdri"
+	"github.com/hyperledger/aries-framework-go/pkg/kms"
 	"github.com/hyperledger/aries-framework-go/pkg/kms/legacykms"
 	"github.com/hyperledger/aries-framework-go/pkg/storage"
 )
@@ -18,7 +20,8 @@ type Provider struct {
 	ServiceValue                  interface{}
 	ServiceErr                    error
 	ServiceMap                    map[string]interface{}
-	KMSValue                      legacykms.KeyManager
+	KMSValue                      kms.KeyManager
+	LegacyKMSValue                legacykms.KMS
 	ServiceEndpointValue          string
 	StorageProviderValue          storage.Provider
 	TransientStorageProviderValue storage.Provider
@@ -26,6 +29,7 @@ type Provider struct {
 	PackerValue                   packer.Packer
 	OutboundDispatcherValue       dispatcher.Outbound
 	VDRIRegistryValue             vdriapi.Registry
+	CryptoValue                   crypto.Crypto
 }
 
 // Service return service
@@ -43,7 +47,17 @@ func (p *Provider) Service(id string) (interface{}, error) {
 
 // LegacyKMS returns a LegacyKMS instance
 func (p *Provider) LegacyKMS() legacykms.KeyManager {
+	return p.LegacyKMSValue
+}
+
+// KMS returns a kms instance
+func (p *Provider) KMS() kms.KeyManager {
 	return p.KMSValue
+}
+
+// Crypto returns a crypto
+func (p *Provider) Crypto() crypto.Crypto {
+	return p.CryptoValue
 }
 
 // ServiceEndpoint returns the service endpoint
@@ -84,4 +98,9 @@ func (p *Provider) OutboundDispatcher() dispatcher.Outbound {
 // VDRIRegistry return vdri registry
 func (p *Provider) VDRIRegistry() vdriapi.Registry {
 	return p.VDRIRegistryValue
+}
+
+// Signer returns a legacyKMS signing service.
+func (p *Provider) Signer() legacykms.Signer {
+	return p.LegacyKMSValue
 }

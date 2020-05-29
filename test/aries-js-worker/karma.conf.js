@@ -18,6 +18,9 @@ const ENV_CONFIG_OUT = "test/environment.js";
         if (attr.startsWith("E2E_")) {
             config[attr.replace("E2E_", "")] = process.env[attr]
         }
+        if (attr.startsWith("HTTP_")) {
+            config[attr] = process.env[attr]
+        }
     }
     fs.writeFileSync(ENV_CONFIG_OUT, "export const environment = " + util.inspect(config))
 })()
@@ -29,20 +32,25 @@ module.exports = function(config) {
         singleRun: true,
         captureConsole: true,
         files: [
-            {pattern: "test/**/*.js", type: "module"},
             {pattern: "public/aries-framework-go/assets/*", included: false},
             {pattern: "node_modules/@hyperledger/aries-framework-go/dist/web/*", type: "module"},
             {pattern: "node_modules/@hyperledger/aries-framework-go/dist/rest/*", type: "module"},
+            {pattern: 'node_modules/axios/dist/axios.min.map', included: false},
             "node_modules/axios/dist/axios.min.js",
             {pattern: "test/common.js", included: false},
             {pattern: "test/environment.js", included: false},
+            {pattern: "test/**/*.js", type: "module"}
         ],
         reporters: ["spec"],
         customLaunchers: {
             ChromeHeadless_cors: {
                 base: "ChromeHeadless",
                 flags: ["--disable-web-security"]
-            }
+            },
+            Chrome_without_security: {
+                 base: 'Chrome',
+                 flags: ['--disable-web-security', '--disable-site-isolation-trials', '--auto-open-devtools-for-tabs']
+             },
         },
         client: {
             mocha: {

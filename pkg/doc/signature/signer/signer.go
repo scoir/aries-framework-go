@@ -12,14 +12,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
+
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/proof"
 )
 
-// signatureSuite encapsulates signature suite methods required for signing documents
-type signatureSuite interface {
+const defaultProofPurpose = "assertionMethod"
 
+// SignatureSuite encapsulates signature suite methods required for signing documents
+type SignatureSuite interface {
 	// GetCanonicalDocument will return normalized/canonical version of the document
-	GetCanonicalDocument(doc map[string]interface{}) ([]byte, error)
+	GetCanonicalDocument(doc map[string]interface{}, opts ...jsonld.ProcessorOpts) ([]byte, error)
 
 	// GetDigest returns document digest
 	GetDigest(doc []byte) []byte
@@ -36,7 +39,7 @@ type signatureSuite interface {
 
 // DocumentSigner implements signing of JSONLD documents
 type DocumentSigner struct {
-	signatureSuites []signatureSuite
+	signatureSuites []SignatureSuite
 }
 
 // Context holds signing options and private key
@@ -48,10 +51,12 @@ type Context struct {
 	Domain                  string                        // optional
 	Nonce                   []byte                        // optional
 	VerificationMethod      string                        // optional
+	Challenge               string                        // optional
+	Purpose                 string                        // optional
 }
 
 // New returns new instance of document verifier
-func New(signatureSuites ...signatureSuite) *DocumentSigner {
+func New(signatureSuites ...SignatureSuite) *DocumentSigner {
 	return &DocumentSigner{signatureSuites: signatureSuites}
 }
 
@@ -102,13 +107,21 @@ func (signer *DocumentSigner) signObject(context *Context, jsonLdObject map[stri
 		Domain:                  context.Domain,
 		Nonce:                   context.Nonce,
 		VerificationMethod:      context.VerificationMethod,
+		Challenge:               context.Challenge,
+		ProofPurpose:            context.Purpose,
+	}
+
+	// TODO support custom proof purpose
+	//  (https://github.com/hyperledger/aries-framework-go/issues/1586)
+	if p.ProofPurpose == "" {
+		p.ProofPurpose = defaultProofPurpose
 	}
 
 	if context.SignatureRepresentation == proof.SignatureJWS {
 		p.JWS = proof.CreateDetachedJWTHeader(p) + ".."
 	}
 
-	message, err := proof.CreateVerifyData(suite, jsonLdObject, p)
+	message, err := proof.CreateVerifyData(suite, jsonLdObject, p, jsonld.WithRemoveAllInvalidRDF())
 	if err != nil {
 		return err
 	}
@@ -133,7 +146,7 @@ func (signer *DocumentSigner) applySignatureValue(context *Context, p *proof.Pro
 }
 
 // getSignatureSuite returns signature suite based on signature type
-func (signer *DocumentSigner) getSignatureSuite(signatureType string) (signatureSuite, error) {
+func (signer *DocumentSigner) getSignatureSuite(signatureType string) (SignatureSuite, error) {
 	for _, s := range signer.signatureSuites {
 		if s.Accept(signatureType) {
 			return s, nil

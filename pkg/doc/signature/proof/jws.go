@@ -11,7 +11,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/piprate/json-gold/ld"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 )
 
 const securityContext = "https://w3id.org/security/v2"
@@ -24,8 +24,21 @@ const (
 
 // CreateDetachedJWTHeader creates detached JWT header.
 func CreateDetachedJWTHeader(p *Proof) string {
+	var jwsAlg string
+
+	// TODO this is a hacky workaround, to be improved
+	//  (https://github.com/hyperledger/aries-framework-go/issues/1589)
+	switch p.Type {
+	case "EcdsaSecp256k1Signature2019":
+		jwsAlg = "ES256K"
+	case "Ed25519Signature2018":
+		jwsAlg = "EdDSA"
+	default:
+		jwsAlg = p.Type
+	}
+
 	jwtHeaderMap := map[string]interface{}{
-		"alg":  p.Type,
+		"alg":  jwsAlg,
 		"b64":  false,
 		"crit": []string{"b64"},
 	}
@@ -63,17 +76,18 @@ func getJWTHeader(jwt string) (string, error) {
 // It differs by using https://w3id.org/security/v2 as context for JSON-LD canonization of both
 // JSON and Signature documents and by preliminary JSON-LD compacting of JSON document.
 // The current implementation is based on the https://github.com/digitalbazaar/jsonld-signatures.
-func createVerifyJWS(suite signatureSuite, jsonldDoc map[string]interface{}, p *Proof) ([]byte, error) {
+func createVerifyJWS(suite signatureSuite, jsonldDoc map[string]interface{}, p *Proof,
+	opts ...jsonld.ProcessorOpts) ([]byte, error) {
 	proofOptions := p.JSONLdObject()
 
-	canonicalProofOptions, err := prepareJWSProof(suite, proofOptions)
+	canonicalProofOptions, err := prepareJWSProof(suite, proofOptions, opts...)
 	if err != nil {
 		return nil, err
 	}
 
 	proofOptionsDigest := suite.GetDigest(canonicalProofOptions)
 
-	canonicalDoc, err := prepareDocumentForJWS(suite, jsonldDoc)
+	canonicalDoc, err := prepareDocumentForJWS(suite, jsonldDoc, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +104,8 @@ func createVerifyJWS(suite signatureSuite, jsonldDoc map[string]interface{}, p *
 	return append([]byte(jwtHeader+"."), verifyData...), nil
 }
 
-func prepareJWSProof(suite signatureSuite, proofOptions map[string]interface{}) ([]byte, error) {
+func prepareJWSProof(suite signatureSuite, proofOptions map[string]interface{},
+	opts ...jsonld.ProcessorOpts) ([]byte, error) {
 	proofOptions[jsonldContext] = securityContext
 
 	proofOptionsCopy := make(map[string]interface{}, len(proofOptions))
@@ -102,10 +117,11 @@ func prepareJWSProof(suite signatureSuite, proofOptions map[string]interface{}) 
 	delete(proofOptionsCopy, jsonldJWS)
 	delete(proofOptionsCopy, jsonldProofValue)
 
-	return suite.GetCanonicalDocument(proofOptionsCopy)
+	return suite.GetCanonicalDocument(proofOptionsCopy, append(opts, jsonld.WithRemoveAllInvalidRDF())...)
 }
 
-func prepareDocumentForJWS(suite signatureSuite, jsonldObject map[string]interface{}) ([]byte, error) {
+func prepareDocumentForJWS(suite signatureSuite, jsonldObject map[string]interface{},
+	opts ...jsonld.ProcessorOpts) ([]byte, error) {
 	// copy document object without proof
 	doc := GetCopyWithoutProof(jsonldObject)
 
@@ -119,7 +135,7 @@ func prepareDocumentForJWS(suite signatureSuite, jsonldObject map[string]interfa
 	}
 
 	// build canonical document
-	return suite.GetCanonicalDocument(doc)
+	return suite.GetCanonicalDocument(doc, opts...)
 }
 
 func getCompactedWithSecuritySchema(docMap map[string]interface{}) (map[string]interface{}, error) {
@@ -130,13 +146,7 @@ func getCompactedWithSecuritySchema(docMap map[string]interface{}) (map[string]i
 		return nil, err
 	}
 
-	proc := ld.NewJsonLdProcessor()
-	options := ld.NewJsonLdOptions("")
-	options.ProcessingMode = ld.JsonLd_1_1
-	options.Format = "application/n-quads"
-	options.ProduceGeneralizedRdf = true
-
-	return proc.Compact(docMap, contextMap, options)
+	return jsonld.Default().Compact(docMap, contextMap)
 }
 
 // cached value from https://w3id.org/security/v2

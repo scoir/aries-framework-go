@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/jsonld"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/proof"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/signer"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
@@ -19,36 +20,6 @@ import (
 const (
 	resolveIDParts = 2
 )
-
-// signatureSuite encapsulates signature suite methods required for signing documents
-type signatureSuite interface {
-
-	// GetCanonicalDocument will return normalized/canonical version of the document
-	GetCanonicalDocument(doc map[string]interface{}) ([]byte, error)
-
-	// GetDigest returns document digest
-	GetDigest(doc []byte) []byte
-
-	// Accept registers this signature suite with the given signature type
-	Accept(signatureType string) bool
-
-	// CompactProof indicates weather to compact the proof doc before canonization
-	CompactProof() bool
-}
-
-type verifierSignatureSuite interface {
-	signatureSuite
-
-	// Verify will verify signature against public key
-	Verify(pubKey *verifier.PublicKey, doc []byte, signature []byte) error
-}
-
-type signerSignatureSuite interface {
-	signatureSuite
-
-	// Sign will sign JSON LD document
-	Sign(jsonLdDoc []byte) ([]byte, error)
-}
 
 type keyResolverAdapter struct {
 	pubKeyFetcher PublicKeyFetcher
@@ -84,16 +55,33 @@ const (
 // LinkedDataProofContext holds options needed to build a Linked Data Proof.
 type LinkedDataProofContext struct {
 	SignatureType           string                  // required
-	Suite                   signerSignatureSuite    // required
+	Suite                   signer.SignatureSuite   // required
 	SignatureRepresentation SignatureRepresentation // required
 	Created                 *time.Time              // optional
 	VerificationMethod      string                  // optional
+	Challenge               string                  // optional
+	Domain                  string                  // optional
+	Purpose                 string                  // optional
 }
 
-func checkLinkedDataProof(jsonldBytes []byte, suite verifierSignatureSuite, pubKeyFetcher PublicKeyFetcher) error {
-	documentVerifier := verifier.New(&keyResolverAdapter{pubKeyFetcher}, suite)
+func checkLinkedDataProof(jsonldBytes []byte, suites []verifier.SignatureSuite,
+	pubKeyFetcher PublicKeyFetcher, jsonldOpts *jsonldCredentialOpts) error {
+	documentVerifier, err := verifier.New(&keyResolverAdapter{pubKeyFetcher}, suites...)
+	if err != nil {
+		return fmt.Errorf("create new signature verifier: %w", err)
+	}
 
-	err := documentVerifier.Verify(jsonldBytes)
+	var processorOpts []jsonld.ProcessorOpts
+
+	if jsonldOpts.jsonldDocumentLoader != nil {
+		processorOpts = append(processorOpts, jsonld.WithDocumentLoader(jsonldOpts.jsonldDocumentLoader))
+	}
+
+	if jsonldOpts.jsonldOnlyValidRDF {
+		processorOpts = append(processorOpts, jsonld.WithRemoveAllInvalidRDF())
+	}
+
+	err = documentVerifier.Verify(jsonldBytes, processorOpts...)
 	if err != nil {
 		return fmt.Errorf("check linked data proof: %w", err)
 	}
@@ -137,5 +125,8 @@ func mapContext(context *LinkedDataProofContext) *signer.Context {
 		SignatureRepresentation: proof.SignatureRepresentation(context.SignatureRepresentation),
 		Created:                 context.Created,
 		VerificationMethod:      context.VerificationMethod,
+		Challenge:               context.Challenge,
+		Domain:                  context.Domain,
+		Purpose:                 context.Purpose,
 	}
 }

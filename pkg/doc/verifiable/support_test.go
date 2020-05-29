@@ -25,6 +25,7 @@ import (
 
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/suite/ed25519signature2018"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
 	kmsapi "github.com/hyperledger/aries-framework-go/pkg/kms"
 )
 
@@ -32,7 +33,11 @@ const certPrefix = "testdata/crypto"
 
 //nolint:lll
 const validCredential = `{
-  "@context": "https://www.w3.org/2018/credentials/v1",
+  "@context": [
+    "https://www.w3.org/2018/credentials/v1",
+    "https://www.w3.org/2018/credentials/examples/v1",
+    "https://trustbloc.github.io/context/vc/examples-v1.jsonld"
+  ],
   "id": "http://example.edu/credentials/1872",
   "type": "VerifiableCredential",
   "credentialSubject": {
@@ -40,7 +45,8 @@ const validCredential = `{
   },
   "issuer": {
     "id": "did:example:76e12ec712ebc6f1c221ebfeb1f",
-    "name": "Example University"
+    "name": "Example University",
+    "image": "data:image/png;base64,iVBOR"
   },
   "issuanceDate": "2010-01-01T19:23:24Z",
   "expirationDate": "2020-01-01T19:23:24Z",
@@ -196,6 +202,7 @@ func getEcdsaSecp256k1RS256TestSigner(privKey *ecdsa.PrivateKey) *ecdsaTestSigne
 	return &ecdsaTestSigner{privateKey: privKey, hash: crypto.SHA256}
 }
 
+// TODO replace this signer by Crypto signer and get key from LocalKMS
 type ecdsaTestSigner struct {
 	privateKey *ecdsa.PrivateKey
 	hash       crypto.Hash
@@ -287,4 +294,63 @@ func createVCWithLinkedDataProof() (*Credential, PublicKeyFetcher) {
 	}
 
 	return vc, SingleKey(pubKey, kmsapi.ED25519)
+}
+
+func createVCWithTwoLinkedDataProofs() (*Credential, PublicKeyFetcher) {
+	vc, err := NewUnverifiedCredential([]byte(validCredential))
+	if err != nil {
+		panic(err)
+	}
+
+	created := time.Now()
+
+	pubKey1, privKey1, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
+	err = vc.AddLinkedDataProof(&LinkedDataProofContext{
+		SignatureType:           "Ed25519Signature2018",
+		Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey1))),
+		SignatureRepresentation: SignatureJWS,
+		Created:                 &created,
+		VerificationMethod:      "did:123#key1",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	pubKey2, privKey2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
+	err = vc.AddLinkedDataProof(&LinkedDataProofContext{
+		SignatureType:           "Ed25519Signature2018",
+		Suite:                   ed25519signature2018.New(suite.WithSigner(getEd25519TestSigner(privKey2))),
+		SignatureRepresentation: SignatureJWS,
+		Created:                 &created,
+		VerificationMethod:      "did:123#key2",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return vc, func(issuerID, keyID string) (*verifier.PublicKey, error) {
+		switch keyID {
+		case "#key1":
+			return &verifier.PublicKey{
+				Type:  "Ed25519Signature2018",
+				Value: pubKey1,
+			}, nil
+
+		case "#key2":
+			return &verifier.PublicKey{
+				Type:  "Ed25519Signature2018",
+				Value: pubKey2,
+			}, nil
+		}
+
+		panic("invalid keyID")
+	}
 }

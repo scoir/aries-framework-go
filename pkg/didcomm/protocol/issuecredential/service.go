@@ -52,7 +52,7 @@ type customError struct{ error }
 
 // transitionalPayload keeps payload needed for Continue function to proceed with the action
 type transitionalPayload struct {
-	// protocol state machine identifier
+	// Protocol instance ID
 	PIID      string
 	StateName string
 	Msg       service.DIDCommMsgMap
@@ -81,9 +81,9 @@ type metaData struct {
 
 // Action contains helpful information about action
 type Action struct {
-	// protocol state machine identifier
-	PIID string
-	Msg  service.DIDCommMsgMap
+	// Protocol instance ID
+	PIID string                `json:"piid"`
+	Msg  service.DIDCommMsgMap `json:"msg"`
 }
 
 // Opt describes option signature for the Continue function
@@ -507,7 +507,7 @@ func (s *Service) ActionStop(piID string, cErr error) error {
 func (s *Service) Actions() ([]Action, error) {
 	records := s.store.Iterator(
 		fmt.Sprintf(transitionalPayloadKey, ""),
-		fmt.Sprintf(transitionalPayloadKey, "~"),
+		fmt.Sprintf(transitionalPayloadKey, storage.EndKeySuffix),
 	)
 	defer records.Release()
 

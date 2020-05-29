@@ -19,6 +19,7 @@ import (
 
 	"github.com/hyperledger/aries-framework-go/pkg/common/log"
 	"github.com/hyperledger/aries-framework-go/pkg/doc/jwt"
+	"github.com/hyperledger/aries-framework-go/pkg/doc/signature/verifier"
 )
 
 //go:generate testdata/scripts/openssl_env.sh testdata/scripts/generate_test_keys.sh
@@ -113,7 +114,8 @@ const defaultSchema = `{
           ],
           "properties": {
             "id": {
-              "type": "string"
+              "type": "string",
+              "format": "uri"
             }
           }
         }
@@ -389,8 +391,9 @@ type Evidence interface{}
 
 // Issuer of the Verifiable Credential
 type Issuer struct {
-	ID   string
-	Name string
+	ID    string
+	Name  string
+	Image string
 }
 
 // Subject of the Verifiable Credential
@@ -414,6 +417,7 @@ type Credential struct {
 	RefreshService []TypedID
 
 	CustomFields CustomFields
+	rawFields    rememberedFields
 }
 
 // rawCredential is a basic verifiable credential
@@ -422,8 +426,8 @@ type rawCredential struct {
 	ID             string          `json:"id,omitempty"`
 	Type           interface{}     `json:"type,omitempty"`
 	Subject        Subject         `json:"credentialSubject,omitempty"`
-	Issued         *time.Time      `json:"issuanceDate,omitempty"`
-	Expired        *time.Time      `json:"expirationDate,omitempty"`
+	Issued         interface{}     `json:"issuanceDate,omitempty"`
+	Expired        interface{}     `json:"expirationDate,omitempty"`
 	Proof          json.RawMessage `json:"proof,omitempty"`
 	Status         *TypedID        `json:"credentialStatus,omitempty"`
 	Issuer         interface{}     `json:"issuer,omitempty"`
@@ -461,8 +465,9 @@ func (rc *rawCredential) UnmarshalJSON(data []byte) error {
 }
 
 type compositeIssuer struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Image string `json:"image,omitempty"`
 }
 
 // CredentialDecoder makes a custom decoding of Verifiable Credential in JSON form to existent
@@ -481,13 +486,21 @@ type credentialOpts struct {
 	allowedCustomContexts map[string]bool
 	allowedCustomTypes    map[string]bool
 	disabledProofCheck    bool
-	jsonldDocumentLoader  ld.DocumentLoader
 	strictValidation      bool
-	ldpSuite              verifierSignatureSuite
+	ldpSuites             []verifier.SignatureSuite
+
+	jsonldCredentialOpts
 }
 
 // CredentialOpt is the Verifiable Credential decoding option
 type CredentialOpt func(opts *credentialOpts)
+
+// WithDisabledProofCheck option for disabling of proof check.
+func WithDisabledProofCheck() CredentialOpt {
+	return func(opts *credentialOpts) {
+		opts.disabledProofCheck = true
+	}
+}
 
 // WithNoCustomSchemaCheck option is for disabling of Credential Schemas download if defined
 // in Verifiable Credential. Instead, the Verifiable Credential is checked against default Schema.
@@ -563,18 +576,33 @@ func WithJSONLDDocumentLoader(documentLoader ld.DocumentLoader) CredentialOpt {
 // In case of JSON Schema validation, additionalProperties=true is set on the schema.
 //
 // In case of JSON-LD validation, the comparison of JSON-LD VC document after compaction with original VC one is made.
-// In case when any field (root one or inside credentialSubject) not defined in any JSON-LD schema is present
-// the validation exception is raised.
+// In case of mismatch a validation exception is raised.
 func WithStrictValidation() CredentialOpt {
 	return func(opts *credentialOpts) {
 		opts.strictValidation = true
 	}
 }
 
-// WithEmbeddedSignatureSuite defines the suite which is used to check embedded linked data proof of VC.
-func WithEmbeddedSignatureSuite(suite verifierSignatureSuite) CredentialOpt {
+// WithExternalJSONLDContext defines external JSON-LD contexts to be used in JSON-LD validation and
+// Linked Data Signatures verification.
+func WithExternalJSONLDContext(context ...string) CredentialOpt {
 	return func(opts *credentialOpts) {
-		opts.ldpSuite = suite
+		opts.externalContext = context
+	}
+}
+
+// WithJSONLDOnlyValidRDF indicates the need to remove all invalid RDF dataset from normalize document
+// when verifying linked data signatures of verifiable credential.
+func WithJSONLDOnlyValidRDF() CredentialOpt {
+	return func(opts *credentialOpts) {
+		opts.jsonldOnlyValidRDF = true
+	}
+}
+
+// WithEmbeddedSignatureSuites defines the suites which are used to check embedded linked data proof of VC.
+func WithEmbeddedSignatureSuites(suites ...verifier.SignatureSuite) CredentialOpt {
+	return func(opts *credentialOpts) {
+		opts.ldpSuites = suites
 	}
 }
 
@@ -618,9 +646,16 @@ func decodeIssuer(issuer interface{}) (Issuer, error) {
 			return Issuer{}, err
 		}
 
+		image, err := getStringEntry(iss, "image")
+		if err != nil {
+			return Issuer{}, err
+		}
+
+		// TODO: allow for custom fields.
 		return Issuer{
-			ID:   id,
-			Name: name,
+			ID:    id,
+			Name:  name,
+			Image: image,
 		}, nil
 	default:
 		return Issuer{}, errors.New("unsupported format of issuer")
@@ -739,14 +774,10 @@ func validateCredential(vc *Credential, vcBytes []byte, vcOpts *credentialOpts) 
 			return err
 		}
 
-		if len(vc.Context) > 1 {
-			return vc.validateJSONLD(vcOpts)
-		}
-
-		return nil
+		return vc.validateJSONLD(vcBytes, vcOpts)
 
 	case jsonldValidation:
-		return vc.validateJSONLD(vcOpts)
+		return vc.validateJSONLD(vcBytes, vcOpts)
 
 	case baseContextValidation:
 		return validateBaseContext(vc, vcBytes, vcOpts)
@@ -787,13 +818,8 @@ func validateBaseContextWithExtendedValidation(vc *Credential, vcOpts *credentia
 	return vc.validateJSONSchema(vcBytes, vcOpts)
 }
 
-func (vc *Credential) validateJSONLD(vcOpts *credentialOpts) error {
-	vcJSON, err := vc.MarshalJSON()
-	if err != nil {
-		return err
-	}
-
-	return compactJSONLD(string(vcJSON), vcOpts.jsonldDocumentLoader, vcOpts.strictValidation)
+func (vc *Credential) validateJSONLD(vcBytes []byte, vcOpts *credentialOpts) error {
+	return compactJSONLD(string(vcBytes), &vcOpts.jsonldCredentialOpts, vcOpts.strictValidation)
 }
 
 // CustomCredentialProducer is a factory for Credentials with extended data model.
@@ -833,6 +859,7 @@ func CreateCustomCredential(
 	return vcBase, nil
 }
 
+//nolint: gocyclo,funlen
 func newCredential(raw *rawCredential) (*Credential, error) {
 	var schemas []TypedID
 
@@ -877,6 +904,16 @@ func newCredential(raw *rawCredential) (*Credential, error) {
 		return nil, fmt.Errorf("fill credential proof from raw: %w", err)
 	}
 
+	issuedDate, err := decodeDate(raw.Issued)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse issued date from raw: %w", err)
+	}
+
+	expiredDate, err := decodeDate(raw.Expired)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse issued date from raw: %w", err)
+	}
+
 	return &Credential{
 		Context:        context,
 		CustomContext:  customContext,
@@ -884,8 +921,8 @@ func newCredential(raw *rawCredential) (*Credential, error) {
 		Types:          types,
 		Subject:        raw.Subject,
 		Issuer:         issuer,
-		Issued:         raw.Issued,
-		Expired:        raw.Expired,
+		Issued:         issuedDate,
+		Expired:        expiredDate,
 		Proofs:         proofs,
 		Status:         raw.Status,
 		Schemas:        schemas,
@@ -893,7 +930,32 @@ func newCredential(raw *rawCredential) (*Credential, error) {
 		TermsOfUse:     termsOfUse,
 		RefreshService: refreshService,
 		CustomFields:   raw.CustomFields,
+		rawFields:      preserveRawFields(raw),
 	}, nil
+}
+
+func preserveRawFields(raw *rawCredential) rememberedFields {
+	r := make(rememberedFields)
+
+	r.PushIssuanceDate(raw.Issued)
+	r.PushExpirationDate(raw.Expired)
+
+	return r
+}
+
+// decodeDate decodes given date to '*time.Time'
+// returns nil with no error if nil argument passed
+func decodeDate(dateStr interface{}) (*time.Time, error) {
+	if dateStr == nil {
+		return nil, nil
+	}
+
+	d, err := time.Parse(time.RFC3339, dateStr.(string))
+	if err != nil {
+		return nil, err
+	}
+
+	return &d, nil
 }
 
 func decodeTypedID(bytes json.RawMessage) ([]TypedID, error) {
@@ -975,8 +1037,12 @@ func newDefaultSchemaLoader() *CredentialSchemaLoader {
 }
 
 func issuerToRaw(issuer Issuer) interface{} {
-	if issuer.Name != "" {
-		return &compositeIssuer{ID: issuer.ID, Name: issuer.Name}
+	if issuer.Name != "" || issuer.Image != "" {
+		return &compositeIssuer{
+			ID:    issuer.ID,
+			Name:  issuer.Name,
+			Image: issuer.Image,
+		}
 	}
 
 	return issuer.ID
@@ -1156,22 +1222,35 @@ func (vc *Credential) raw() (*rawCredential, error) {
 		return nil, err
 	}
 
-	return &rawCredential{
+	var schema interface{}
+	if len(vc.Schemas) > 0 {
+		schema = vc.Schemas
+	}
+
+	r := &rawCredential{
 		Context:        contextToRaw(vc.Context, vc.CustomContext),
 		ID:             vc.ID,
 		Type:           typesToRaw(vc.Types),
 		Subject:        vc.Subject,
-		Issued:         vc.Issued,
-		Expired:        vc.Expired,
 		Proof:          proof,
 		Status:         vc.Status,
 		Issuer:         issuerToRaw(vc.Issuer),
-		Schema:         vc.Schemas,
+		Schema:         schema,
 		Evidence:       vc.Evidence,
 		RefreshService: rawRefreshService,
 		TermsOfUse:     rawTermsOfUse,
 		CustomFields:   vc.CustomFields,
-	}, nil
+	}
+
+	if vc.Issued != nil {
+		r.Issued = vc.rawFields.GetIssuanceDate(vc.Issued)
+	}
+
+	if vc.Expired != nil {
+		r.Expired = vc.rawFields.GetExpirationDate(vc.Expired)
+	}
+
+	return r, nil
 }
 
 func typesToRaw(types []string) interface{} {
@@ -1228,7 +1307,7 @@ func (vc *Credential) MarshalJSON() ([]byte, error) {
 // Presentation encloses credential into presentation.
 func (vc *Credential) Presentation() (*Presentation, error) {
 	vp := Presentation{
-		Context: vc.Context,
+		Context: []string{baseContext},
 		Type:    []string{vpType},
 	}
 

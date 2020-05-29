@@ -42,16 +42,26 @@ const (
 	ChaCha20Poly1305 = "ChaCha20Poly1305"
 	// XChaCha20Poly1305 key type value
 	XChaCha20Poly1305 = "XChaCha20Poly1305"
-	// ECDSAP256 key type value
-	ECDSAP256 = "ECDSAP256"
-	// ECDSAP384 key type value
-	ECDSAP384 = "ECDSAP384"
-	// ECDSAP521 key type value
-	ECDSAP521 = "ECDSAP521"
+	// ECDSAP256DER key type value
+	ECDSAP256DER = "ECDSAP256DER"
+	// ECDSAP384DER key type value
+	ECDSAP384DER = "ECDSAP384DER"
+	// ECDSAP521DER key type value
+	ECDSAP521DER = "ECDSAP521DER"
+	// ECDSAP256IEEEP1363 key type value
+	ECDSAP256IEEEP1363 = "ECDSAP256IEEEP1363"
+	// ECDSAP384IEEEP1363 key type value
+	ECDSAP384IEEEP1363 = "ECDSAP384IEEEP1363"
+	// ECDSAP521IEEEP1363 key type value
+	ECDSAP521IEEEP1363 = "ECDSAP521IEEEP1363"
 	// ED25519 key type value
 	ED25519 = "ED25519"
 	// RSA key type value
 	RSA = "RSA"
+	// HMACSHA256Tag256 key type value
+	HMACSHA256Tag256 = "HMACSHA256Tag256"
+	// ECDHES256AES256GCM key type value
+	ECDHES256AES256GCM = "ECDHES256AES256GCM"
 )
 
 // KeyType represents a key type supported by the KMS
@@ -68,16 +78,24 @@ const (
 	ChaCha20Poly1305Type = KeyType(ChaCha20Poly1305)
 	// XChaCha20Poly1305Type key type value
 	XChaCha20Poly1305Type = KeyType(XChaCha20Poly1305)
-	// ECDSAP256Type key type value
-	ECDSAP256Type = KeyType(ECDSAP256)
-	// ECDSAP384Type key type value
-	ECDSAP384Type = KeyType(ECDSAP384)
-	// ECDSAP521Type key type value
-	ECDSAP521Type = KeyType(ECDSAP521)
+	// ECDSAP256TypeDER key type value
+	ECDSAP256TypeDER = KeyType(ECDSAP256DER)
+	// ECDSAP384TypeDER key type value
+	ECDSAP384TypeDER = KeyType(ECDSAP384DER)
+	// ECDSAP521TypeDER key type value
+	ECDSAP521TypeDER = KeyType(ECDSAP521DER)
+	// ECDSAP256TypeIEEEP1363 key type value
+	ECDSAP256TypeIEEEP1363 = KeyType(ECDSAP256IEEEP1363)
+	// ECDSAP384TypeIEEEP1363 key type value
+	ECDSAP384TypeIEEEP1363 = KeyType(ECDSAP384IEEEP1363)
+	// ECDSAP521TypeIEEEP1363 key type value
+	ECDSAP521TypeIEEEP1363 = KeyType(ECDSAP521IEEEP1363)
 	// ED25519Type key type value
 	ED25519Type = KeyType(ED25519)
 	// RSAType key type value
 	RSAType = KeyType(RSA)
 	// HMACSHA256Tag256Type key type value
-	HMACSHA256Tag256Type = KeyType("HMACSHA256Tag256")
+	HMACSHA256Tag256Type = KeyType(HMACSHA256Tag256)
+	// ECDHES256AES256GCMType key type value
+	ECDHES256AES256GCMType = KeyType(ECDHES256AES256GCM)
 )

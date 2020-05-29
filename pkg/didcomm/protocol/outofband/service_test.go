@@ -99,6 +99,11 @@ func TestAccept(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, s.Accept("https://didcomm.org/oob-request/1.0/request"))
 	})
+	t.Run("accepts out-of-band invitation messages", func(t *testing.T) {
+		s, err := New(testProvider())
+		require.NoError(t, err)
+		require.True(t, s.Accept("https://didcomm.org/oob-invitation/1.0/invitation"))
+	})
 	t.Run("rejects unsupported messages", func(t *testing.T) {
 		s, err := New(testProvider())
 		require.NoError(t, err)
@@ -108,10 +113,17 @@ func TestAccept(t *testing.T) {
 
 func TestHandleInbound(t *testing.T) {
 	t.Run("accepts out-of-band request messages", func(t *testing.T) {
-		s, err := New(testProvider())
-		require.NoError(t, err)
-		_, err = s.HandleInbound(
+		s := newAutoService(t, testProvider())
+		_, err := s.HandleInbound(
 			service.NewDIDCommMsgMap(newRequest()),
+			"did:example:mine",
+			"did:example:theirs")
+		require.NoError(t, err)
+	})
+	t.Run("accepts out-of-band invitation messages", func(t *testing.T) {
+		s := newAutoService(t, testProvider())
+		_, err := s.HandleInbound(
+			service.NewDIDCommMsgMap(newInvitation()),
 			"did:example:mine",
 			"did:example:theirs")
 		require.NoError(t, err)
@@ -140,9 +152,48 @@ func TestHandleInbound(t *testing.T) {
 		case e := <-events:
 			require.Equal(t, Name, e.ProtocolName)
 			require.Equal(t, expected, e.Message)
+			require.NotNil(t, e.Properties)
+			props, ok := e.Properties.(*eventProps)
+			require.True(t, ok)
+			require.Empty(t, props.ConnectionID())
+			require.NoError(t, props.Error())
 		case <-time.After(1 * time.Second):
 			t.Error("timeout waiting for action event")
 		}
+	})
+	t.Run("sends pre-state msg event", func(t *testing.T) {
+		expected := service.NewDIDCommMsgMap(newRequest())
+		s, err := New(testProvider())
+		require.NoError(t, err)
+		stateMsgs := make(chan service.StateMsg)
+		err = s.RegisterMsgEvent(stateMsgs)
+		require.NoError(t, err)
+		err = s.RegisterActionEvent(make(chan service.DIDCommAction))
+		require.NoError(t, err)
+		_, err = s.HandleInbound(expected, "did:example:mine", "did:example:theirs")
+		require.NoError(t, err)
+		select {
+		case result := <-stateMsgs:
+			require.Equal(t, service.PreState, result.Type)
+			require.Equal(t, Name, result.ProtocolName)
+			require.Equal(t, StateRequested, result.StateID)
+			require.Equal(t, expected, result.Msg)
+			props, ok := result.Properties.(*eventProps)
+			require.True(t, ok)
+			require.Empty(t, props.ConnectionID())
+			require.Nil(t, props.Error())
+		case <-time.After(1 * time.Second):
+			t.Error("timeout waiting for action event")
+		}
+	})
+	t.Run("fails if no listeners have been registered for action events", func(t *testing.T) {
+		s, err := New(testProvider())
+		require.NoError(t, err)
+		_, err = s.HandleInbound(
+			service.NewDIDCommMsgMap(newRequest()),
+			"did:example:mine",
+			"did:example:theirs")
+		require.Error(t, err)
 	})
 }
 
@@ -238,24 +289,27 @@ func TestHandleRequestCallback(t *testing.T) {
 }
 
 func TestHandleDIDEvent(t *testing.T) {
-	t.Run("invokes inbound msg handler", func(t *testing.T) {
+	t.Run("invokes outbound msg handler", func(t *testing.T) {
 		invoked := make(chan struct{}, 2)
 		connID := uuid.New().String()
 		pthid := uuid.New().String()
 
 		provider := testProvider()
-		provider.InboundMsgHandler = func([]byte, string, string) error {
-			invoked <- struct{}{}
-			return nil
+		provider.OutboundMsgHandler = &outboundMsgHandlerStub{
+			handleFunc: func(service.DIDCommMsg, string, string) error {
+				invoked <- struct{}{}
+				return nil
+			},
 		}
 
 		// setup connection state
 		r, err := connection.NewRecorder(provider)
 		require.NoError(t, err)
 		err = r.SaveConnectionRecord(&connection.Record{
-			ConnectionID: connID,
-			MyDID:        "did:example:mine",
-			TheirDID:     "did:example:theirs",
+			ConnectionID:   connID,
+			MyDID:          "did:example:mine",
+			TheirDID:       "did:example:theirs",
+			ParentThreadID: pthid,
 		})
 		require.NoError(t, err)
 
@@ -272,6 +326,8 @@ func TestHandleDIDEvent(t *testing.T) {
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck(pthid)),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{ConnID: connID},
 		})
 		require.NoError(t, err)
 
@@ -283,17 +339,27 @@ func TestHandleDIDEvent(t *testing.T) {
 	})
 	t.Run("wraps error returned by the transient store", func(t *testing.T) {
 		expected := errors.New("test")
+		const connID = "123"
 		provider := testProvider()
 		provider.TransientStoreProvider = &mockstore.MockStoreProvider{
 			Store: &mockstore.MockStore{
+				Store:  make(map[string][]byte),
 				ErrGet: expected,
 			},
 		}
+		r, err := connection.NewRecorder(provider)
+		require.NoError(t, err)
+		err = r.SaveConnectionRecord(&connection.Record{
+			ConnectionID: connID,
+		})
+		require.NoError(t, err)
 		s := newAutoService(t, provider)
-		err := s.handleDIDEvent(service.StateMsg{
+		err = s.handleDIDEvent(service.StateMsg{
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck()),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{},
 		})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, expected))
@@ -320,6 +386,8 @@ func TestHandleDIDEvent(t *testing.T) {
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck(pthid)),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{},
 		})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, expected))
@@ -330,17 +398,20 @@ func TestHandleDIDEvent(t *testing.T) {
 		connID := uuid.New().String()
 
 		provider := testProvider()
-		provider.InboundMsgHandler = func([]byte, string, string) error {
-			return expected
+		provider.OutboundMsgHandler = &outboundMsgHandlerStub{
+			handleFunc: func(service.DIDCommMsg, string, string) error {
+				return expected
+			},
 		}
 
 		// setup connection state
 		r, err := connection.NewRecorder(provider)
 		require.NoError(t, err)
 		err = r.SaveConnectionRecord(&connection.Record{
-			ConnectionID: connID,
-			MyDID:        "did:example:mine",
-			TheirDID:     "did:example:theirs",
+			ConnectionID:   connID,
+			MyDID:          "did:example:mine",
+			TheirDID:       "did:example:theirs",
+			ParentThreadID: pthid,
 		})
 		require.NoError(t, err)
 
@@ -356,6 +427,8 @@ func TestHandleDIDEvent(t *testing.T) {
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck(pthid)),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{ConnID: connID},
 		})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, expected))
@@ -374,9 +447,10 @@ func TestHandleDIDEvent(t *testing.T) {
 		r, err := connection.NewRecorder(provider)
 		require.NoError(t, err)
 		err = r.SaveConnectionRecord(&connection.Record{
-			ConnectionID: connID,
-			MyDID:        "did:example:mine",
-			TheirDID:     "did:example:theirs",
+			ConnectionID:   connID,
+			MyDID:          "did:example:mine",
+			TheirDID:       "did:example:theirs",
+			ParentThreadID: pthid,
 		})
 		require.NoError(t, err)
 
@@ -398,6 +472,8 @@ func TestHandleDIDEvent(t *testing.T) {
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck(pthid)),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{ConnID: connID},
 		})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, expected))
@@ -450,7 +526,7 @@ func TestHandleDIDEvent(t *testing.T) {
 				Done:         false,
 			}),
 		)
-		s.getNextRequestFunc = func(*myState) (*decorator.Attachment, bool) {
+		s.chooseRequestFunc = func(*myState) (*decorator.Attachment, bool) {
 			return nil, false
 		}
 		err := s.handleDIDEvent(service.StateMsg{
@@ -466,7 +542,20 @@ func TestHandleDIDEvent(t *testing.T) {
 		pthid := uuid.New().String()
 		connID := uuid.New().String()
 
-		s := newAutoService(t, testProvider(),
+		provider := testProvider()
+
+		// setup connection state
+		r, err := connection.NewRecorder(provider)
+		require.NoError(t, err)
+		err = r.SaveConnectionRecord(&connection.Record{
+			ConnectionID:   connID,
+			MyDID:          "did:example:mine",
+			TheirDID:       "did:example:theirs",
+			ParentThreadID: pthid,
+		})
+
+		require.NoError(t, err)
+		s := newAutoService(t, provider,
 			withState(t, &myState{
 				ID:           pthid,
 				ConnectionID: connID,
@@ -477,10 +566,12 @@ func TestHandleDIDEvent(t *testing.T) {
 		s.extractDIDCommMsgBytesFunc = func(*decorator.Attachment) ([]byte, error) {
 			return nil, expected
 		}
-		err := s.handleDIDEvent(service.StateMsg{
+		err = s.handleDIDEvent(service.StateMsg{
 			ProtocolName: didexchange.DIDExchange,
 			Type:         service.PostState,
 			Msg:          service.NewDIDCommMsgMap(newAck(pthid)),
+			StateID:      didexchange.StateIDCompleted,
+			Properties:   &mockdidexchange.MockEventProperties{ConnID: connID},
 		})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, expected))
@@ -495,7 +586,7 @@ func TestListener(t *testing.T) {
 			invoked <- struct{}{}
 			return "", nil
 		}
-		go listener(callbacks, nil, handleReqFunc, nil)()
+		go listener(callbacks, nil, handleReqFunc, nil, &service.Message{})()
 
 		callbacks <- &callback{
 			msg: service.NewDIDCommMsgMap(newRequest()),
@@ -514,12 +605,67 @@ func TestListener(t *testing.T) {
 			invoked <- struct{}{}
 			return nil
 		}
-		go listener(nil, didEvents, nil, handleDidEventFunc)()
+		go listener(nil, didEvents, nil, handleDidEventFunc, nil)()
 		didEvents <- service.StateMsg{}
 
 		select {
 		case <-invoked:
 		case <-time.After(1 * time.Second):
+			t.Error("timeout")
+		}
+	})
+	t.Run("sends post-state event for oob request", func(t *testing.T) {
+		connID := uuid.New().String()
+		expected := service.NewDIDCommMsgMap(newRequest())
+		handler := make(chan service.StateMsg)
+		handlers := &service.Message{}
+		err := handlers.RegisterMsgEvent(handler)
+		require.NoError(t, err)
+		callbacks := make(chan *callback)
+		handleReqFunc := func(*callback) (string, error) { return connID, nil }
+
+		go listener(callbacks, nil, handleReqFunc, nil, handlers)()
+		callbacks <- &callback{msg: expected}
+
+		select {
+		case result := <-handler:
+			require.Equal(t, service.PostState, result.Type)
+			require.Equal(t, "requested", result.StateID)
+			require.Equal(t, "out-of-band", result.ProtocolName)
+			require.Equal(t, expected, result.Msg)
+			props, ok := result.Properties.(*eventProps)
+			require.True(t, ok)
+			require.Equal(t, connID, props.ConnectionID())
+			require.Nil(t, props.Error())
+		case <-time.After(time.Second):
+			t.Error("timeout")
+		}
+	})
+	t.Run("sends post-state event with error for oob request", func(t *testing.T) {
+		expectedMsg := service.NewDIDCommMsgMap(newRequest())
+		expectedErr := errors.New("test")
+		handler := make(chan service.StateMsg)
+		handlers := &service.Message{}
+		err := handlers.RegisterMsgEvent(handler)
+		require.NoError(t, err)
+		callbacks := make(chan *callback)
+		handleReqFunc := func(*callback) (string, error) { return "", expectedErr }
+
+		go listener(callbacks, nil, handleReqFunc, nil, handlers)()
+		callbacks <- &callback{msg: expectedMsg}
+
+		select {
+		case result := <-handler:
+			require.Equal(t, service.PostState, result.Type)
+			require.Equal(t, "requested", result.StateID)
+			require.Equal(t, "out-of-band", result.ProtocolName)
+			require.Equal(t, expectedMsg, result.Msg)
+			props, ok := result.Properties.(*eventProps)
+			require.True(t, ok)
+			require.Empty(t, props.ConnectionID())
+			require.Error(t, props.Error())
+			require.Equal(t, expectedErr, props.Error())
+		case <-time.After(time.Second):
 			t.Error("timeout")
 		}
 	})
@@ -608,6 +754,39 @@ func TestAcceptRequest(t *testing.T) {
 	})
 }
 
+func TestAcceptInvitation(t *testing.T) {
+	t.Run("returns connectionID", func(t *testing.T) {
+		expected := "123456"
+		provider := testProvider()
+		provider.ServiceMap = map[string]interface{}{
+			didexchange.DIDExchange: &mockdidexchange.MockDIDExchangeSvc{
+				RespondToFunc: func(_ *didexchange.OOBInvitation) (string, error) {
+					return expected, nil
+				},
+			},
+		}
+		s := newAutoService(t, provider)
+		result, err := s.AcceptInvitation(newInvitation())
+		require.NoError(t, err)
+		require.Equal(t, expected, result)
+	})
+	t.Run("wraps error from didexchange service", func(t *testing.T) {
+		expected := errors.New("test")
+		provider := testProvider()
+		provider.ServiceMap = map[string]interface{}{
+			didexchange.DIDExchange: &mockdidexchange.MockDIDExchangeSvc{
+				RespondToFunc: func(_ *didexchange.OOBInvitation) (string, error) {
+					return "", expected
+				},
+			},
+		}
+		s := newAutoService(t, provider)
+		_, err := s.AcceptInvitation(newInvitation())
+		require.Error(t, err)
+		require.True(t, errors.Is(err, expected))
+	})
+}
+
 func TestSaveRequest(t *testing.T) {
 	t.Run("saves request", func(t *testing.T) {
 		expected := newRequest()
@@ -670,6 +849,120 @@ func TestSaveRequest(t *testing.T) {
 	})
 }
 
+func TestSaveInvitation(t *testing.T) {
+	t.Run("saves invitation", func(t *testing.T) {
+		savedInStore := false
+		savedInDidSvc := false
+		expected := newInvitation()
+		provider := testProvider()
+		provider.StoreProvider = mockstore.NewCustomMockStoreProvider(&stubStore{
+			putFunc: func(k string, v []byte) error {
+				savedInStore = true
+				result := &Invitation{}
+				err := json.Unmarshal(v, result)
+				require.NoError(t, err)
+				require.Equal(t, expected, result)
+				return nil
+			},
+		})
+		provider.ServiceMap[didexchange.DIDExchange] = &mockdidexchange.MockDIDExchangeSvc{
+			SaveFunc: func(i *didexchange.OOBInvitation) error {
+				savedInDidSvc = true
+				require.NotNil(t, i)
+				require.NotEmpty(t, i.ID)
+				require.Equal(t, expected.ID, i.ThreadID)
+				require.Equal(t, expected.Label, i.Label)
+				require.Equal(t, expected.Service[0], i.Target)
+				return nil
+			},
+		}
+		s := newAutoService(t, provider)
+		err := s.SaveInvitation(expected)
+		require.NoError(t, err)
+		require.True(t, savedInStore)
+		require.True(t, savedInDidSvc)
+	})
+	t.Run("wraps error from store", func(t *testing.T) {
+		expected := errors.New("test")
+		provider := testProvider()
+		provider.StoreProvider = &mockstore.MockStoreProvider{
+			Store: &mockstore.MockStore{
+				ErrPut: expected,
+			},
+		}
+		s := newAutoService(t, provider)
+		err := s.SaveInvitation(newInvitation())
+		require.Error(t, err)
+		require.True(t, errors.Is(err, expected))
+	})
+	t.Run("fails when invitation does not have services", func(t *testing.T) {
+		inv := newInvitation()
+		inv.Service = []interface{}{}
+		s := newAutoService(t, testProvider())
+		err := s.SaveInvitation(inv)
+		require.Error(t, err)
+	})
+	t.Run("wraps error from didexchange service", func(t *testing.T) {
+		expected := errors.New("test")
+		provider := testProvider()
+		provider.ServiceMap[didexchange.DIDExchange] = &mockdidexchange.MockDIDExchangeSvc{
+			SaveFunc: func(*didexchange.OOBInvitation) error {
+				return expected
+			},
+		}
+		s := newAutoService(t, provider)
+		err := s.SaveInvitation(newInvitation())
+		require.Error(t, err)
+		require.True(t, errors.Is(err, expected))
+	})
+}
+
+func TestChooseTarget(t *testing.T) {
+	t.Run("chooses a string", func(t *testing.T) {
+		expected := "abc123"
+		result, err := chooseTarget([]interface{}{expected})
+		require.NoError(t, err)
+		require.Equal(t, expected, result)
+	})
+	t.Run("chooses a did service entry", func(t *testing.T) {
+		expected := &did.Service{
+			ID:              uuid.New().String(),
+			Type:            "did-communication",
+			Priority:        0,
+			RecipientKeys:   []string{"my ver key"},
+			RoutingKeys:     []string{"my routing key"},
+			ServiceEndpoint: "my service endpoint",
+		}
+		result, err := chooseTarget([]interface{}{expected})
+		require.NoError(t, err)
+		require.Equal(t, expected, result)
+	})
+	t.Run("chooses a map-type service", func(t *testing.T) {
+		expected := map[string]interface{}{
+			"id":              uuid.New().String(),
+			"type":            "did-communication",
+			"priority":        uint(0),
+			"recipientKeys":   []string{"my ver key"},
+			"routingKeys":     []string{"my routing key"},
+			"serviceEndpoint": "my service endpoint",
+		}
+		svc, err := chooseTarget([]interface{}{expected})
+		require.NoError(t, err)
+		result, ok := svc.(*did.Service)
+		require.True(t, ok)
+		require.Equal(t, expected["id"], result.ID)
+		require.Equal(t, expected["type"], result.Type)
+		require.Equal(t, expected["priority"], result.Priority)
+		require.Equal(t, expected["recipientKeys"], result.RecipientKeys)
+		require.Equal(t, expected["routingKeys"], result.RoutingKeys)
+		require.Equal(t, expected["serviceEndpoint"], result.ServiceEndpoint)
+	})
+	t.Run("fails if not services are specified", func(t *testing.T) {
+		_, err := chooseTarget([]interface{}{})
+		require.Error(t, err)
+	})
+}
+
 func testProvider() *protocol.MockProvider {
 	return &protocol.MockProvider{
 		StoreProvider:          mockstore.NewMockStoreProvider(),
@@ -695,11 +988,26 @@ func newRequest() *Request {
 				MimeType:    "text/plain",
 				LastModTime: time.Now(),
 				Data: decorator.AttachmentData{
-					Base64: "test",
+					JSON: map[string]interface{}{
+						"@id":   "123",
+						"@type": "test-type",
+					},
 				},
 			},
 		},
 		Service: []interface{}{"did:example:1235"},
+	}
+}
+
+func newInvitation() *Invitation {
+	return &Invitation{
+		ID:        uuid.New().String(),
+		Type:      InvitationMsgType,
+		Label:     "test",
+		Goal:      "test",
+		GoalCode:  "test",
+		Service:   []interface{}{"did:example:1235"},
+		Protocols: []string{didexchange.PIURI},
 	}
 }
 
@@ -813,4 +1121,16 @@ func (s *stubStore) Iterator(start, limit string) storage.StoreIterator {
 
 func (s *stubStore) Delete(k string) error {
 	panic("implement me")
+}
+
+type outboundMsgHandlerStub struct {
+	handleFunc func(service.DIDCommMsg, string, string) error
+}
+
+func (o *outboundMsgHandlerStub) HandleOutbound(msg service.DIDCommMsg, myDID, theirDID string) error {
+	if o.handleFunc != nil {
+		return o.handleFunc(msg, myDID, theirDID)
+	}
+
+	return nil
 }
