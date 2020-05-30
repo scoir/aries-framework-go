@@ -539,7 +539,7 @@ func (s *Service) Register(connectionID string) error {
 		}
 	// TODO https://github.com/hyperledger/aries-framework-go/issues/1134 configure this timeout at decorator level
 	case <-time.After(updateTimeout):
-		return errors.New("timeout waiting for grant from the router")
+		return errors.New(fmt.Sprintf("timeout waiting for grant from the router %s", updateTimeout))
 	}
 
 	// remove the channel once its been processed
