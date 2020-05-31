@@ -74,7 +74,7 @@ const (
 )
 
 const (
-	updateTimeout = 30 * time.Second
+	updateTimeout = 5 * time.Minute
 )
 
 // ErrConnectionNotFound connection not found error
