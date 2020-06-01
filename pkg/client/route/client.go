@@ -76,6 +76,7 @@ func New(ctx provider, opts ...RouteOpt) (*Client, error) {
 	}
 
 	//routeSvc - timeout?
+	//routeSvc.SetTimeout(ropts.timeout)
 
 	return &Client{
 		Event:    routeSvc,
