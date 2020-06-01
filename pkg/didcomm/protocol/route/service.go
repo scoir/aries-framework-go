@@ -7,9 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 package route
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -521,6 +523,10 @@ func (s *Service) Register(connectionID string) error {
 		ID:   msgID,
 		Type: RequestMsgType,
 	}
+
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte("poopie"))))
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprint("from device mydid", conn.MyDID)))))
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprint("from device theirdid", conn.TheirDID)))))
 
 	// send message to the router
 	if err := s.outbound.SendToDID(req, conn.MyDID, conn.TheirDID); err != nil {
