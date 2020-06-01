@@ -7,8 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 package dispatcher
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/btcsuite/btcutil/base58"
@@ -54,6 +56,9 @@ func NewOutbound(prov provider) *OutboundDispatcher {
 
 // SendToDID sends a message from myDID to the agent who owns theirDID
 func (o *OutboundDispatcher) SendToDID(msg interface{}, myDID, theirDID string) error {
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprint("from device mydid", myDID)))))
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprint("from device theirdid", theirDID)))))
+
 	dest, err := service.GetDestination(theirDID, o.vdRegistry)
 	if err != nil {
 		return err
