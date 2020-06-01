@@ -9,6 +9,7 @@ package route
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/common/service"
 	"github.com/hyperledger/aries-framework-go/pkg/didcomm/protocol/route"
@@ -40,8 +41,30 @@ type protocolService interface {
 	GetConnection() (string, error)
 }
 
+// RouteOpt
+type RouteOpt func(opts *routeOpts)
+
+// routeOpts holds options for the router client
+type routeOpts struct {
+	timeout time.Duration
+}
+
+// WithTimeout
+func WithTimeout(t time.Duration) RouteOpt {
+	return func(opts *routeOpts) {
+		opts.timeout = t
+	}
+}
+
 // New return new instance of route client.
-func New(ctx provider) (*Client, error) {
+func New(ctx provider, opts ...RouteOpt) (*Client, error) {
+	ropts := &routeOpts{}
+
+	// generate framework configs from options
+	for _, option := range opts {
+		option(ropts)
+	}
+
 	svc, err := ctx.Service(route.Coordination)
 	if err != nil {
 		return nil, err
@@ -51,6 +74,8 @@ func New(ctx provider) (*Client, error) {
 	if !ok {
 		return nil, errors.New("cast service to route service failed")
 	}
+
+	//routeSvc - timeout?
 
 	return &Client{
 		Event:    routeSvc,

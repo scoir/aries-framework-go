@@ -123,6 +123,7 @@ type Service struct {
 	keylistUpdateMap         map[string]chan *KeylistUpdateResponse
 	keylistUpdateMapLock     sync.RWMutex
 	callbacks                chan *callback
+	clientTimeout            time.Duration
 }
 
 // New return route coordination service.
