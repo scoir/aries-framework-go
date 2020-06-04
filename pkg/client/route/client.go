@@ -41,7 +41,7 @@ type protocolService interface {
 	GetConnection() (string, error)
 }
 
-// RouteOpt
+// RouteOpt configures the medaitor.
 type RouteOpt func(opts *routeOpts)
 
 // routeOpts holds options for the router client
@@ -49,7 +49,7 @@ type routeOpts struct {
 	timeout time.Duration
 }
 
-// WithTimeout
+// WithTimeout option is for response timeout value of DID Resolver
 func WithTimeout(t time.Duration) RouteOpt {
 	return func(opts *routeOpts) {
 		opts.timeout = t

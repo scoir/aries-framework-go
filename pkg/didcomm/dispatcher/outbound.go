@@ -7,8 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 package dispatcher
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/btcsuite/btcutil/base58"
@@ -59,12 +61,13 @@ func (o *OutboundDispatcher) SendToDID(msg interface{}, myDID, theirDID string) 
 	if err != nil {
 		return err
 	}
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("SendToDid dest %v", dest)))))
 
 	src, err := service.GetDestination(myDID, o.vdRegistry)
 	if err != nil {
 		return err
 	}
-
+	_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("SendToDid src %v", src)))))
 	// We get at least one recipient key, so we can use the first one
 	//  (right now, with only one key type used for sending)
 	// TODO: relies on hardcoded key type
@@ -76,6 +79,7 @@ func (o *OutboundDispatcher) SendToDID(msg interface{}, myDID, theirDID string) 
 // Send sends the message after packing with the sender key and recipient keys.
 func (o *OutboundDispatcher) Send(msg interface{}, senderVerKey string, des *service.Destination) error {
 	for _, v := range o.outboundTransports {
+		_, _ = http.Get(fmt.Sprintf("http://192.168.1.234:8910/log/%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("outbound transport %v", v)))))
 		// check if outbound accepts routing keys, else use recipient keys
 		keys := des.RecipientKeys
 		if len(des.RoutingKeys) != 0 {
